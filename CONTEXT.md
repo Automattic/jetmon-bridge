@@ -118,9 +118,9 @@ Immutable event record. The `status_transition` event type is what the adapter c
 | `http_code` | int | HTTP status code (0 if connection-level failure) |
 | `error_code` | int | See error code table below |
 | `rtt_ms` | float | Total round-trip time |
-| `old_status` | varchar | For transition events: prior site status |
-| `new_status` | varchar | For transition events: new site status |
-| `occurred_at` | datetime | Timestamp (database server clock) |
+| `old_status` | tinyint | For transition events: prior site status (1=running, 2=confirmed_down) |
+| `new_status` | tinyint | For transition events: new site status (1=running, 2=confirmed_down) |
+| `created_at` | timestamp | Timestamp (database server clock). Exposed as `occurred_at` in the API response. |
 
 ### `jetmon_check_history`
 Per-check timing samples. Join to `jetmon_audit_log` on `blog_id` + `occurred_at` (approximate — use a small window like ±1s if needed, or join on `id` if a foreign key exists).
@@ -139,15 +139,17 @@ Per-check timing samples. Join to `jetmon_audit_log` on `blog_id` + `occurred_at
 
 ## Jetmon error codes
 
+Values are defined in `internal/checker/checker.go` in the jetmon repo.
+
 ```
 ErrorNone          0   Success
-ErrorConnect       1   TCP connection refused or DNS failure
-ErrorTimeout       2   Context deadline exceeded
+ErrorTimeout       1   Context deadline exceeded
+ErrorConnect       2   TCP connection refused or DNS failure
 ErrorSSL           3   TLS handshake error
-ErrorTLSExpired    4   Certificate past NotAfter date
-ErrorTLSDeprecated 5   TLS 1.0/1.1 (advisory only — IsFailure() returns false)
-ErrorRedirect      6   Redirect when redirect_policy=fail
-ErrorKeyword       7   Body did not contain required keyword
+ErrorRedirect      4   Redirect when redirect_policy=fail
+ErrorKeyword       5   Body did not contain required keyword
+ErrorTLSExpired    6   Certificate past NotAfter date
+ErrorTLSDeprecated 7   TLS 1.0/1.1 (advisory only — IsFailure() returns false)
 ```
 
 `ErrorTLSDeprecated` is advisory: Jetmon detects it but does not call it a failure. The uptime-bench adapter should map it to `"tls_deprecated_advisory"` in `RawClassification` rather than treating it as a down event.

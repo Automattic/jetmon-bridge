@@ -1,0 +1,34 @@
+[Unit]
+Description=jetmon-bridge — read-only HTTP API bridge for Jetmon 1
+After=network.target
+Documentation=https://github.com/Automattic/jetmon-bridge
+
+[Service]
+Type=simple
+User=jetmon-bridge
+Group=jetmon-bridge
+WorkingDirectory=/opt/jetmon-bridge
+
+# All variables below must be set in this file. See systemd/env.sample for a template.
+EnvironmentFile=/opt/jetmon-bridge/env
+
+ExecStart=/opt/jetmon-bridge/jetmon-bridge \
+    -dsn          $JETMON_DSN \
+    -addr         $JETMON_ADDR \
+    -read-timeout $JETMON_READ_TIMEOUT
+
+Restart=on-failure
+RestartSec=5s
+
+# Allow in-flight requests up to 30 s to drain before SIGKILL.
+TimeoutStopSec=35s
+KillMode=mixed
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

@@ -76,18 +76,18 @@ Timing fields (`dns_ms`, `tcp_ms`, `tls_ms`, `ttfb_ms`) are `null` when not avai
 
 ## Jetmon error codes
 
-The `error_code` field in event responses maps to Jetmon 1's internal error vocabulary:
+The `error_code` field in event responses maps to Jetmon's internal error vocabulary:
 
 | Code | Name | Description |
 |------|------|-------------|
 | 0 | `ErrorNone` | Success |
-| 1 | `ErrorConnect` | TCP connection refused or DNS failure |
-| 2 | `ErrorTimeout` | Context deadline exceeded |
+| 1 | `ErrorTimeout` | Context deadline exceeded |
+| 2 | `ErrorConnect` | TCP connection refused or DNS failure |
 | 3 | `ErrorSSL` | TLS handshake error |
-| 4 | `ErrorTLSExpired` | Certificate past NotAfter date |
-| 5 | `ErrorTLSDeprecated` | TLS 1.0/1.1 detected (advisory, not a hard failure) |
-| 6 | `ErrorRedirect` | Redirect when redirect_policy=fail |
-| 7 | `ErrorKeyword` | Body did not contain required keyword |
+| 4 | `ErrorRedirect` | Redirect when redirect_policy=fail |
+| 5 | `ErrorKeyword` | Body did not contain required keyword |
+| 6 | `ErrorTLSExpired` | Certificate past NotAfter date |
+| 7 | `ErrorTLSDeprecated` | TLS 1.0/1.1 detected (advisory, not a hard failure) |
 
 ---
 

@@ -1,0 +1,36 @@
+# Build artifacts
+bin/
+jetmon-bridge
+
+# Go test and coverage artifacts
+*.test
+*.out
+coverage.html
+
+# ─── Secrets and credentials ────────────────────────────────────────────────
+# All .env files (docker, local overrides, etc.)
+.env
+**/.env
+
+# Production environment file loaded by the systemd unit (contains DSN / credentials)
+systemd/env
+
+# TLS / key material — never commit private keys or certificates
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+# ────────────────────────────────────────────────────────────────────────────
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+
+# JetBrains IDEs
+.idea/
+
+# VS Code
+.vscode/
