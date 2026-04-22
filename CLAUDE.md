@@ -126,6 +126,43 @@ JETMON_DSN="user:pass@tcp(localhost:3306)/jetmon_db" ./scripts/deploy-local.sh
 
 ---
 
+## Production deployment (Ubuntu Server 24.04)
+
+The binary is statically linked (`CGO_ENABLED=0`) and has no runtime dependencies on the server — no Go installation or extra packages required.
+
+**First-time setup** — run once to create the system user, directory layout, and systemd unit:
+
+```bash
+./scripts/provision.sh deploy@your-server
+```
+
+The script uploads the binary, installs the service, and exits without starting it. Before starting, edit the environment file on the server to set the DSN:
+
+```bash
+ssh deploy@your-server 'sudo nano /opt/jetmon-bridge/env'
+# Set JETMON_DSN=user:password@tcp(replica-host:3306)/jetmon_db
+```
+
+Then start:
+
+```bash
+ssh deploy@your-server 'sudo systemctl start jetmon-bridge && sudo systemctl status jetmon-bridge'
+```
+
+**Subsequent updates** — build and deploy a new binary without touching the env file or user/directory setup:
+
+```bash
+./scripts/deploy-prod.sh deploy@your-server
+```
+
+**Viewing logs:**
+
+```bash
+ssh deploy@your-server 'journalctl -u jetmon-bridge -f'
+```
+
+---
+
 ## What to check before shipping
 
 - No write queries anywhere (`INSERT`, `UPDATE`, `DELETE`, `CREATE`, `DROP`).

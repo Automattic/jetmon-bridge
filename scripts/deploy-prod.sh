@@ -1,14 +1,9 @@
 #!/usr/bin/env bash
-# Cross-compiles jetmon-bridge for linux/amd64 and deploys it to a remote host.
-# The remote host must have systemd and the SSH user must have passwordless sudo.
+# Builds jetmon-bridge for linux/amd64 and deploys it to a provisioned host.
+# The SSH user must have passwordless sudo on the remote host.
 #
-# Prerequisites on the remote host (one-time setup):
-#   sudo useradd -r -s /sbin/nologin jetmon-bridge
-#   sudo mkdir -p /opt/jetmon-bridge
-#   sudo cp systemd/env.sample /opt/jetmon-bridge/env
-#   sudo chmod 640 /opt/jetmon-bridge/env
-#   sudo chown root:jetmon-bridge /opt/jetmon-bridge/env
-#   # Edit /opt/jetmon-bridge/env and set JETMON_DSN
+# Run scripts/provision.sh once before the first deployment to set up the
+# system user, directory layout, and systemd service on the host.
 #
 # Usage:
 #   ./scripts/deploy-prod.sh <user@host>
