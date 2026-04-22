@@ -29,6 +29,9 @@ systemd/env
 # Windows
 Thumbs.db
 
+# Claude Code local settings (personal permissions/overrides — not shared)
+.claude/settings.local.json
+
 # JetBrains IDEs
 .idea/
 
