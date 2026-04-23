@@ -109,16 +109,26 @@ These are decided. Do not re-litigate them.
 
 ## Local development
 
-Start the full local stack (MySQL 8.0 + jetmon-bridge) with seed data:
+There are two Docker modes depending on whether you have access to a real Jetmon database.
+
+**Real database** — connects the bridge container to Jetmon 1's actual read replica:
 
 ```bash
-cp docker/.env-sample docker/.env   # first time only
+cp docker/.env-sample docker/.env
+# Edit docker/.env and set JETMON_DSN=user:pass@tcp(replica-host:3306)/jetmon_db
 docker compose up --build
 ```
 
-The bridge will be reachable at `http://localhost:7400`. Seed data includes two monitor sites and a status-transition sequence for `blog_id=1001`.
+**Local test data** — spins up a MySQL container seeded with two monitor sites and a recorded down/recovery sequence (no real database needed):
 
-To run the binary directly against an existing MySQL instance:
+```bash
+cp docker/.env-sample docker/.env   # first time only; leave JETMON_DSN unset
+docker compose -f docker-compose.yml -f docker-compose.local.yml up --build
+```
+
+In both cases the bridge is reachable at `http://localhost:7400`.
+
+To run the binary directly (no Docker) against any MySQL instance:
 
 ```bash
 JETMON_DSN="user:pass@tcp(localhost:3306)/jetmon_db" ./scripts/deploy-local.sh
