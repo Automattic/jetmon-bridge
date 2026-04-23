@@ -1,6 +1,8 @@
 services:
   jetmon-bridge:
-    build: .
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
     command:
       - -dsn
       - "${JETMON_DSN:-}"

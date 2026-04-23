@@ -3,6 +3,7 @@
 .dockerignore
 .claude
 bin
+docker
 systemd
 scripts
 *.md

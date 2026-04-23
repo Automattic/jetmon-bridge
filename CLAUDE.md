@@ -116,17 +116,17 @@ There are two Docker modes depending on whether you have access to a real Jetmon
 ```bash
 cp docker/.env-sample docker/.env
 # Edit docker/.env and set JETMON_DSN=user:pass@tcp(replica-host:3306)/jetmon_db
-docker compose up --build
+make up
 ```
 
 **Local test data** — spins up a MySQL container seeded with two monitor sites and a recorded down/recovery sequence (no real database needed):
 
 ```bash
 cp docker/.env-sample docker/.env   # first time only; leave JETMON_DSN unset
-docker compose -f docker-compose.yml -f docker-compose.local.yml up --build
+make up-local
 ```
 
-In both cases the bridge is reachable at `http://localhost:7400`.
+In both cases the bridge is reachable at `http://localhost:7400`. Stop with `make down`; `make down-clean` also wipes the local MySQL data volume.
 
 To run the binary directly (no Docker) against any MySQL instance:
 
