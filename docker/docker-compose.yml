@@ -10,3 +10,10 @@ services:
       - "0.0.0.0:7400"
     ports:
       - "${BRIDGE_LOCAL_PORT:-7400}:7400"
+    networks:
+      - default
+      - jetmon-shared
+
+networks:
+  jetmon-shared:
+    external: true
