@@ -34,7 +34,15 @@ Monitors must be pre-seeded in `jetpack_monitor_sites` before any provisioning c
 
 ### Write mode (`-write=true`)
 
-Enables `POST /monitors` and `DELETE /monitors`. The bridge will create new Jetmon monitor records and soft-delete them. Requires a DSN with write access to `jetpack_monitor_sites`.
+Enables `POST /monitors` and `DELETE /monitors`. The bridge creates new Jetmon monitor records and soft-deletes them.
+
+**Required:** `-write-dsn` must point at the MySQL **primary** (not the read replica). Writes sent to a replica fail immediately with a MySQL "read-only" error. The read DSN (`-dsn`) continues to serve GET requests from the replica.
+
+**Required:** `-bucket` must be set to a `bucket_no` value that has active Jetmon workers assigned. Jetmon distributes checks by bucket; new monitors inserted into an unassigned bucket will never be checked. Check active buckets with:
+
+```sql
+SELECT DISTINCT bucket_no FROM jetpack_monitor_sites WHERE monitor_active = 1;
+```
 
 ---
 
@@ -271,4 +279,6 @@ enabled    = true
 auth       = { token = "your-bearer-token", write_mode = "false" }
 ```
 
-Set `write_mode = "true"` to let uptime-bench create and clean up monitors automatically. Requires the bridge to be started with `-write -token your-bearer-token`.
+Set `write_mode = "true"` to let uptime-bench create and clean up monitors automatically. Requires the bridge to be started with `-write -write-dsn <primary-dsn> -bucket <n> -token your-bearer-token`.
+
+**Timing note:** new monitors are inserted with `last_checked_at` set 2 minutes in the past so Jetmon's worker picks them up on its next check cycle (within ~1 minute for the default 1-minute check interval). Allow at least 2–3 minutes between `Provision` and the start of the test failure window to ensure the monitor has been checked at least once and Jetmon has a baseline status for it.

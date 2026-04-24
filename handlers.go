@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -29,6 +30,7 @@ func handleMonitors(db *sql.DB, timeout time.Duration) http.HandlerFunc {
 
 		m, err := lookupMonitor(ctx, db, url)
 		if err != nil {
+			log.Printf("GET /monitors url=%q: %v", url, err)
 			writeJSON(w, http.StatusInternalServerError, errBody("internal server error"))
 			return
 		}
@@ -40,7 +42,7 @@ func handleMonitors(db *sql.DB, timeout time.Duration) http.HandlerFunc {
 	}
 }
 
-func handleMonitorsPost(db *sql.DB, timeout time.Duration) http.HandlerFunc {
+func handleMonitorsPost(db *sql.DB, bucket int, timeout time.Duration) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			URL string `json:"url"`
@@ -57,8 +59,9 @@ func handleMonitorsPost(db *sql.DB, timeout time.Duration) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), timeout)
 		defer cancel()
 
-		m, created, err := createMonitor(ctx, db, body.URL)
+		m, created, err := createMonitor(ctx, db, body.URL, bucket)
 		if err != nil {
+			log.Printf("POST /monitors url=%q: %v", body.URL, err)
 			writeJSON(w, http.StatusInternalServerError, errBody("internal server error"))
 			return
 		}
@@ -84,6 +87,7 @@ func handleMonitorsDelete(db *sql.DB, timeout time.Duration) http.HandlerFunc {
 
 		found, err := deactivateMonitor(ctx, db, monitorURL)
 		if err != nil {
+			log.Printf("DELETE /monitors url=%q: %v", monitorURL, err)
 			writeJSON(w, http.StatusInternalServerError, errBody("internal server error"))
 			return
 		}
@@ -131,6 +135,7 @@ func handleEvents(db *sql.DB, timeout time.Duration) http.HandlerFunc {
 
 		events, err := lookupEvents(ctx, db, blogID, since, until)
 		if err != nil {
+			log.Printf("GET /events blog_id=%d: %v", blogID, err)
 			writeJSON(w, http.StatusInternalServerError, errBody("internal server error"))
 			return
 		}

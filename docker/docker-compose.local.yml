@@ -22,8 +22,11 @@ services:
       - -addr
       - "0.0.0.0:7400"
       - "-write=${JETMON_WRITE:-false}"
+      - -write-dsn
+      - "root:${MYSQL_ROOT_PASSWORD:-jetmon_test}@tcp(mysql:3306)/${MYSQL_DATABASE:-jetmon_db}"
       - -token
       - "${JETMON_TOKEN:-}"
+      - "-bucket=${JETMON_BUCKET:-0}"
     depends_on:
       mysql:
         condition: service_healthy

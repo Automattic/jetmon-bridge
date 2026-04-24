@@ -14,10 +14,12 @@ import (
 
 func main() {
 	dsn         := flag.String("dsn",          "",               "MySQL DSN for the Jetmon read replica (required)")
+	writeDSN    := flag.String("write-dsn",    "",               "MySQL DSN for write operations (primary); required when -write is set")
 	addr        := flag.String("addr",         "127.0.0.1:7400", "Listen address (host:port)")
 	readTimeout := flag.Duration("read-timeout", 5*time.Second,  "Per-request DB query timeout")
 	write       := flag.Bool("write",          false,            "Enable write endpoints: POST /monitors, DELETE /monitors")
 	token       := flag.String("token",        "",               "Bearer token for auth on all requests; empty disables auth")
+	bucket      := flag.Int("bucket",          0,                "Jetmon bucket number assigned to new monitors (must match an active worker bucket)")
 	flag.Parse()
 
 	if *dsn == "" {
@@ -32,6 +34,22 @@ func main() {
 	}
 	defer db.Close()
 
+	// writeDB is the connection used for INSERT/UPDATE operations.
+	// It should point at the primary, not the read replica.
+	writeDB := db
+	if *write {
+		if *writeDSN == "" {
+			log.Println("WARNING: -write is set but -write-dsn is not — writes will use the read DSN; ensure it is the primary, not a read replica")
+		} else {
+			wdb, err := openDB(*writeDSN)
+			if err != nil {
+				log.Fatalf("write-db: %v", err)
+			}
+			defer wdb.Close()
+			writeDB = wdb
+		}
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /time", handleTime)
 	mux.HandleFunc("GET /monitors", handleMonitors(db, *readTimeout))
@@ -39,9 +57,9 @@ func main() {
 	mux.HandleFunc("GET /healthz", handleHealthz(db))
 
 	if *write {
-		mux.HandleFunc("POST /monitors", handleMonitorsPost(db, *readTimeout))
-		mux.HandleFunc("DELETE /monitors", handleMonitorsDelete(db, *readTimeout))
-		log.Println("jetmon-bridge: write mode enabled")
+		mux.HandleFunc("POST /monitors", handleMonitorsPost(writeDB, *bucket, *readTimeout))
+		mux.HandleFunc("DELETE /monitors", handleMonitorsDelete(writeDB, *readTimeout))
+		log.Printf("jetmon-bridge: write mode enabled (bucket=%d)", *bucket)
 	}
 
 	var handler http.Handler = mux

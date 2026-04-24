@@ -99,7 +99,7 @@ func TestHandleMonitors_ContentTypeOnError(t *testing.T) {
 // --- POST /monitors ---
 
 func TestHandleMonitorsPost_MalformedJSON(t *testing.T) {
-	h := handleMonitorsPost(nil, time.Second)
+	h := handleMonitorsPost(nil, 0, time.Second)
 	req := httptest.NewRequest("POST", "/monitors", strings.NewReader("{bad json"))
 	rec := httptest.NewRecorder()
 	h(rec, req)
@@ -111,7 +111,7 @@ func TestHandleMonitorsPost_MalformedJSON(t *testing.T) {
 }
 
 func TestHandleMonitorsPost_EmptyBody(t *testing.T) {
-	h := handleMonitorsPost(nil, time.Second)
+	h := handleMonitorsPost(nil, 0, time.Second)
 	req := httptest.NewRequest("POST", "/monitors", http.NoBody)
 	rec := httptest.NewRecorder()
 	h(rec, req)
@@ -122,7 +122,7 @@ func TestHandleMonitorsPost_EmptyBody(t *testing.T) {
 }
 
 func TestHandleMonitorsPost_MissingURLField(t *testing.T) {
-	h := handleMonitorsPost(nil, time.Second)
+	h := handleMonitorsPost(nil, 0, time.Second)
 	req := httptest.NewRequest("POST", "/monitors", strings.NewReader(`{}`))
 	rec := httptest.NewRecorder()
 	h(rec, req)
@@ -134,7 +134,7 @@ func TestHandleMonitorsPost_MissingURLField(t *testing.T) {
 }
 
 func TestHandleMonitorsPost_EmptyURL(t *testing.T) {
-	h := handleMonitorsPost(nil, time.Second)
+	h := handleMonitorsPost(nil, 0, time.Second)
 	req := httptest.NewRequest("POST", "/monitors", strings.NewReader(`{"url":""}`))
 	rec := httptest.NewRecorder()
 	h(rec, req)
@@ -249,7 +249,7 @@ func TestWriteModeRouting_Returns405WhenDisabled(t *testing.T) {
 func TestWriteModeRouting_RoutesRegisteredWhenEnabled(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /monitors", handleMonitors(nil, time.Second))
-	mux.HandleFunc("POST /monitors", handleMonitorsPost(nil, time.Second))
+	mux.HandleFunc("POST /monitors", handleMonitorsPost(nil, 0, time.Second))
 	mux.HandleFunc("DELETE /monitors", handleMonitorsDelete(nil, time.Second))
 
 	// POST with empty url returns 400 (not 405) — confirms the route is registered.

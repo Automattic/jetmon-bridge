@@ -104,8 +104,8 @@ ORDER BY jal.created_at ASC`
 
 const sqlInsertMonitor = `
 INSERT INTO jetpack_monitor_sites
-    (blog_id, bucket_no, monitor_url, monitor_active, site_status, check_interval, redirect_policy)
-VALUES (?, 0, ?, 1, 1, 1, 'follow')`
+    (blog_id, bucket_no, monitor_url, monitor_active, site_status, check_interval, redirect_policy, last_checked_at)
+VALUES (?, ?, ?, 1, 1, 1, 'follow', ?)`
 
 const sqlReactivateMonitor = `
 UPDATE jetpack_monitor_sites SET monitor_active = 1 WHERE monitor_url = ?`
@@ -197,7 +197,8 @@ func lookupEvents(ctx context.Context, db *sql.DB, blogID int64, since, until ti
 
 // createMonitor upserts a monitor: inserts a new one or re-activates a deactivated one.
 // Returns the monitor and true if it was newly created or reactivated; false if already active.
-func createMonitor(ctx context.Context, db *sql.DB, monitorURL string) (*monitor, bool, error) {
+// bucket must match the Jetmon worker bucket that should process this monitor.
+func createMonitor(ctx context.Context, db *sql.DB, monitorURL string, bucket int) (*monitor, bool, error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, false, fmt.Errorf("begin tx: %w", err)
@@ -227,9 +228,12 @@ func createMonitor(ctx context.Context, db *sql.DB, monitorURL string) (*monitor
 	}
 
 	// Insert with a random synthetic blog_id; retry on the rare collision.
+	// last_checked_at is set to 2 minutes ago so Jetmon's worker immediately sees the
+	// monitor as overdue for its first check rather than leaving it stuck on NULL.
+	lastChecked := time.Now().Add(-2 * time.Minute)
 	for range 5 {
 		blogID := blogIDBase + rand.Int63n(blogIDRange)
-		if _, err := tx.ExecContext(ctx, sqlInsertMonitor, blogID, monitorURL); err != nil {
+		if _, err := tx.ExecContext(ctx, sqlInsertMonitor, blogID, bucket, monitorURL, lastChecked); err != nil {
 			if isDuplicateKey(err) {
 				continue
 			}

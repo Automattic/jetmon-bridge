@@ -9,8 +9,11 @@ services:
       - -addr
       - "0.0.0.0:7400"
       - "-write=${JETMON_WRITE:-false}"
+      - -write-dsn
+      - "${JETMON_WRITE_DSN:-}"
       - -token
       - "${JETMON_TOKEN:-}"
+      - "-bucket=${JETMON_BUCKET:-0}"
     ports:
       - "${BRIDGE_LOCAL_PORT:-7400}:7400"
     networks:
