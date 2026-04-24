@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -36,6 +37,61 @@ func handleMonitors(db *sql.DB, timeout time.Duration) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, m)
+	}
+}
+
+func handleMonitorsPost(db *sql.DB, timeout time.Duration) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			URL string `json:"url"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, errBody("invalid request body"))
+			return
+		}
+		if body.URL == "" {
+			writeJSON(w, http.StatusBadRequest, errBody("url is required"))
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), timeout)
+		defer cancel()
+
+		m, created, err := createMonitor(ctx, db, body.URL)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, errBody("internal server error"))
+			return
+		}
+
+		status := http.StatusOK
+		if created {
+			status = http.StatusCreated
+		}
+		writeJSON(w, status, m)
+	}
+}
+
+func handleMonitorsDelete(db *sql.DB, timeout time.Duration) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		monitorURL := r.URL.Query().Get("url")
+		if monitorURL == "" {
+			writeJSON(w, http.StatusBadRequest, errBody("url parameter required"))
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), timeout)
+		defer cancel()
+
+		found, err := deactivateMonitor(ctx, db, monitorURL)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, errBody("internal server error"))
+			return
+		}
+		if !found {
+			writeJSON(w, http.StatusNotFound, errBody("not found"))
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	}
 }
 
@@ -79,7 +135,7 @@ func handleEvents(db *sql.DB, timeout time.Duration) http.HandlerFunc {
 			return
 		}
 
-		writeJSON(w, http.StatusOK, map[string]any{"events": events})
+		writeJSON(w, http.StatusOK, events)
 	}
 }
 
@@ -91,6 +147,18 @@ func handleHealthz(db *sql.DB) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	}
+}
+
+// authMiddleware rejects requests that don't carry the expected Bearer token.
+func authMiddleware(token string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		if !strings.HasPrefix(auth, "Bearer ") || strings.TrimPrefix(auth, "Bearer ") != token {
+			writeJSON(w, http.StatusUnauthorized, errBody("unauthorized"))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

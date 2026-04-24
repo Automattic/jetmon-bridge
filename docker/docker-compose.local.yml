@@ -19,6 +19,11 @@ services:
     command:
       - -dsn
       - "root:${MYSQL_ROOT_PASSWORD:-jetmon_test}@tcp(mysql:3306)/${MYSQL_DATABASE:-jetmon_db}"
+      - -addr
+      - "0.0.0.0:7400"
+      - "-write=${JETMON_WRITE:-false}"
+      - -token
+      - "${JETMON_TOKEN:-}"
     depends_on:
       mysql:
         condition: service_healthy

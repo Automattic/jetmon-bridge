@@ -15,7 +15,9 @@ EnvironmentFile=/opt/jetmon-bridge/env
 ExecStart=/opt/jetmon-bridge/jetmon-bridge \
     -dsn          $JETMON_DSN \
     -addr         $JETMON_ADDR \
-    -read-timeout $JETMON_READ_TIMEOUT
+    -read-timeout $JETMON_READ_TIMEOUT \
+    -write=$JETMON_WRITE \
+    -token=$JETMON_TOKEN
 
 Restart=on-failure
 RestartSec=5s

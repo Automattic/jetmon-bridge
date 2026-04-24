@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math/rand"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
@@ -38,80 +39,117 @@ func openDB(dsn string) (*sql.DB, error) {
 // monitor is the /monitors response shape.
 type monitor struct {
 	BlogID         int64  `json:"blog_id"`
-	URL            string `json:"url"`
-	Status         string `json:"status"`
+	MonitorURL     string `json:"monitor_url"`
+	SiteStatus     int    `json:"site_status"`
+	MonitorActive  bool   `json:"monitor_active"`
 	Keyword        string `json:"keyword"`
 	RedirectPolicy string `json:"redirect_policy"`
 }
 
 // event is a single entry in the /events response.
 type event struct {
-	BlogID     int64     `json:"blog_id"`
-	EventType  string    `json:"event_type"`
-	OldStatus  string    `json:"old_status"`
-	NewStatus  string    `json:"new_status"`
-	ErrorCode  int       `json:"error_code"`
-	HTTPCode   int       `json:"http_code"`
-	Source     string    `json:"source"`
-	RTTMS      int       `json:"rtt_ms"`
-	DNSMS      *int      `json:"dns_ms"`
-	TCPMS      *int      `json:"tcp_ms"`
-	TLSMS      *int      `json:"tls_ms"`
-	TTFBMS     *int      `json:"ttfb_ms"`
-	OccurredAt time.Time `json:"occurred_at"`
+	ID        int64   `json:"id"`
+	BlogID    int64   `json:"blog_id"`
+	EventType string  `json:"event_type"`
+	Source    string  `json:"source"`
+	HTTPCode  *int    `json:"http_code"`
+	OldStatus *int    `json:"old_status"`
+	NewStatus *int    `json:"new_status"`
+	Detail    *string `json:"detail"`
+	CreatedAt string  `json:"created_at"`
+}
+
+// rowQueryer is satisfied by *sql.DB and *sql.Tx, allowing lookups within transactions.
+type rowQueryer interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
 const sqlMonitor = `
-SELECT blog_id, monitor_url, site_status,
-       COALESCE(check_keyword, '')      AS check_keyword,
+SELECT blog_id, monitor_url, site_status, monitor_active,
+       COALESCE(check_keyword, '')         AS keyword,
        COALESCE(redirect_policy, 'follow') AS redirect_policy
 FROM   jetpack_monitor_sites
 WHERE  monitor_url = ?
+  AND  monitor_active = 1
 LIMIT  1`
 
-// GROUP BY jal.id collapses duplicate rows when more than one check_history
-// record falls within the ±1 s match window for the same audit event.
+// sqlMonitorAny finds any monitor regardless of active status, preferring active rows.
+// Used in write-mode create/reactivate flows to detect duplicates.
+const sqlMonitorAny = `
+SELECT blog_id, monitor_url, site_status, monitor_active,
+       COALESCE(check_keyword, '')         AS keyword,
+       COALESCE(redirect_policy, 'follow') AS redirect_policy
+FROM   jetpack_monitor_sites
+WHERE  monitor_url = ?
+ORDER BY monitor_active DESC
+LIMIT  1`
+
 const sqlEvents = `
 SELECT
+    jal.id,
     jal.blog_id,
     jal.event_type,
-    COALESCE(jal.old_status, 0)  AS old_status,
-    COALESCE(jal.new_status, 0)  AS new_status,
-    COALESCE(jal.error_code, 0)  AS error_code,
-    COALESCE(jal.http_code, 0)   AS http_code,
     jal.source,
-    COALESCE(jal.rtt_ms, 0)      AS rtt_ms,
-    jal.created_at,
-    MAX(jch.dns_ms)  AS dns_ms,
-    MAX(jch.tcp_ms)  AS tcp_ms,
-    MAX(jch.tls_ms)  AS tls_ms,
-    MAX(jch.ttfb_ms) AS ttfb_ms
+    jal.http_code,
+    jal.old_status,
+    jal.new_status,
+    jal.detail,
+    jal.created_at
 FROM jetmon_audit_log jal
-LEFT JOIN jetmon_check_history jch
-    ON  jch.blog_id    = jal.blog_id
-    AND jch.checked_at >= DATE_SUB(jal.created_at, INTERVAL 1 SECOND)
-    AND jch.checked_at <= DATE_ADD(jal.created_at, INTERVAL 1 SECOND)
 WHERE jal.blog_id    = ?
   AND jal.event_type = 'status_transition'
   AND jal.created_at >= ?
   AND jal.created_at  < ?
-GROUP BY jal.id
 ORDER BY jal.created_at ASC`
 
-func lookupMonitor(ctx context.Context, db *sql.DB, url string) (*monitor, error) {
+const sqlInsertMonitor = `
+INSERT INTO jetpack_monitor_sites
+    (blog_id, bucket_no, monitor_url, monitor_active, site_status, check_interval, redirect_policy)
+VALUES (?, 0, ?, 1, 1, 1, 'follow')`
+
+const sqlReactivateMonitor = `
+UPDATE jetpack_monitor_sites SET monitor_active = 1 WHERE monitor_url = ?`
+
+const sqlDeactivateMonitor = `
+UPDATE jetpack_monitor_sites SET monitor_active = 0 WHERE monitor_url = ?`
+
+// Synthetic blog_id range for test monitors: [2^62, 2^62+2^30).
+// Keeps test IDs well clear of real WordPress blog_ids.
+const (
+	blogIDBase  = int64(1) << 62
+	blogIDRange = int64(1) << 30
+)
+
+func scanMonitorRow(row *sql.Row) (*monitor, error) {
 	var m monitor
-	var siteStatus int
-	err := db.QueryRowContext(ctx, sqlMonitor, url).Scan(
-		&m.BlogID, &m.URL, &siteStatus, &m.Keyword, &m.RedirectPolicy,
-	)
+	var active int8
+	err := row.Scan(&m.BlogID, &m.MonitorURL, &m.SiteStatus, &active, &m.Keyword, &m.RedirectPolicy)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
+		return nil, fmt.Errorf("scan monitor: %w", err)
+	}
+	m.MonitorActive = active != 0
+	return &m, nil
+}
+
+// lookupMonitor returns the active monitor for the URL, or nil if not found or inactive.
+func lookupMonitor(ctx context.Context, q rowQueryer, url string) (*monitor, error) {
+	m, err := scanMonitorRow(q.QueryRowContext(ctx, sqlMonitor, url))
+	if err != nil {
 		return nil, fmt.Errorf("query monitor: %w", err)
 	}
-	m.Status = siteStatusString(siteStatus)
-	return &m, nil
+	return m, nil
+}
+
+// lookupAnyMonitor returns any monitor for the URL regardless of active status.
+func lookupAnyMonitor(ctx context.Context, q rowQueryer, url string) (*monitor, error) {
+	m, err := scanMonitorRow(q.QueryRowContext(ctx, sqlMonitorAny, url))
+	if err != nil {
+		return nil, fmt.Errorf("query monitor: %w", err)
+	}
+	return m, nil
 }
 
 func lookupEvents(ctx context.Context, db *sql.DB, blogID int64, since, until time.Time) ([]event, error) {
@@ -124,33 +162,31 @@ func lookupEvents(ctx context.Context, db *sql.DB, blogID int64, since, until ti
 	events := make([]event, 0)
 	for rows.Next() {
 		var e event
-		var oldStatus, newStatus int
-		var dnsMS, tcpMS, tlsMS, ttfbMS sql.NullInt32
+		var httpCode, oldStatus, newStatus sql.NullInt32
+		var detail sql.NullString
+		var createdAt time.Time
 		if err := rows.Scan(
-			&e.BlogID, &e.EventType, &oldStatus, &newStatus,
-			&e.ErrorCode, &e.HTTPCode, &e.Source, &e.RTTMS, &e.OccurredAt,
-			&dnsMS, &tcpMS, &tlsMS, &ttfbMS,
+			&e.ID, &e.BlogID, &e.EventType, &e.Source,
+			&httpCode, &oldStatus, &newStatus, &detail, &createdAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan event: %w", err)
 		}
-		e.OldStatus = siteStatusString(oldStatus)
-		e.NewStatus = siteStatusString(newStatus)
-		if dnsMS.Valid {
-			v := int(dnsMS.Int32)
-			e.DNSMS = &v
+		if httpCode.Valid {
+			v := int(httpCode.Int32)
+			e.HTTPCode = &v
 		}
-		if tcpMS.Valid {
-			v := int(tcpMS.Int32)
-			e.TCPMS = &v
+		if oldStatus.Valid {
+			v := int(oldStatus.Int32)
+			e.OldStatus = &v
 		}
-		if tlsMS.Valid {
-			v := int(tlsMS.Int32)
-			e.TLSMS = &v
+		if newStatus.Valid {
+			v := int(newStatus.Int32)
+			e.NewStatus = &v
 		}
-		if ttfbMS.Valid {
-			v := int(ttfbMS.Int32)
-			e.TTFBMS = &v
+		if detail.Valid {
+			e.Detail = &detail.String
 		}
+		e.CreatedAt = createdAt.UTC().Format(time.RFC3339)
 		events = append(events, e)
 	}
 	if err := rows.Err(); err != nil {
@@ -159,13 +195,73 @@ func lookupEvents(ctx context.Context, db *sql.DB, blogID int64, since, until ti
 	return events, nil
 }
 
-func siteStatusString(s int) string {
-	switch s {
-	case 1:
-		return "running"
-	case 2:
-		return "confirmed_down"
-	default:
-		return "unknown"
+// createMonitor upserts a monitor: inserts a new one or re-activates a deactivated one.
+// Returns the monitor and true if it was newly created or reactivated; false if already active.
+func createMonitor(ctx context.Context, db *sql.DB, monitorURL string) (*monitor, bool, error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, false, fmt.Errorf("begin tx: %w", err)
 	}
+	defer tx.Rollback()
+
+	m, err := lookupAnyMonitor(ctx, tx, monitorURL)
+	if err != nil {
+		return nil, false, err
+	}
+
+	if m != nil {
+		if m.MonitorActive {
+			if err := tx.Commit(); err != nil {
+				return nil, false, fmt.Errorf("commit: %w", err)
+			}
+			return m, false, nil
+		}
+		if _, err := tx.ExecContext(ctx, sqlReactivateMonitor, monitorURL); err != nil {
+			return nil, false, fmt.Errorf("reactivate monitor: %w", err)
+		}
+		m.MonitorActive = true
+		if err := tx.Commit(); err != nil {
+			return nil, false, fmt.Errorf("commit: %w", err)
+		}
+		return m, true, nil
+	}
+
+	// Insert with a random synthetic blog_id; retry on the rare collision.
+	for range 5 {
+		blogID := blogIDBase + rand.Int63n(blogIDRange)
+		if _, err := tx.ExecContext(ctx, sqlInsertMonitor, blogID, monitorURL); err != nil {
+			if isDuplicateKey(err) {
+				continue
+			}
+			return nil, false, fmt.Errorf("insert monitor: %w", err)
+		}
+		m, err = lookupAnyMonitor(ctx, tx, monitorURL)
+		if err != nil {
+			return nil, false, err
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, false, fmt.Errorf("commit: %w", err)
+		}
+		return m, true, nil
+	}
+	return nil, false, fmt.Errorf("create monitor: failed to assign unique blog_id after retries")
+}
+
+// deactivateMonitor soft-deletes a monitor by setting monitor_active=0.
+// Returns false if no matching monitor was found.
+func deactivateMonitor(ctx context.Context, db *sql.DB, monitorURL string) (bool, error) {
+	res, err := db.ExecContext(ctx, sqlDeactivateMonitor, monitorURL)
+	if err != nil {
+		return false, fmt.Errorf("deactivate monitor: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("deactivate monitor rows affected: %w", err)
+	}
+	return n > 0, nil
+}
+
+func isDuplicateKey(err error) bool {
+	var mysqlErr *mysql.MySQLError
+	return errors.As(err, &mysqlErr) && mysqlErr.Number == 1062
 }

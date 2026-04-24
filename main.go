@@ -13,9 +13,11 @@ import (
 )
 
 func main() {
-	dsn := flag.String("dsn", "", "MySQL DSN for the Jetmon read replica (required)")
-	addr := flag.String("addr", "127.0.0.1:7400", "Listen address (host:port)")
-	readTimeout := flag.Duration("read-timeout", 5*time.Second, "Per-request DB query timeout")
+	dsn         := flag.String("dsn",          "",               "MySQL DSN for the Jetmon read replica (required)")
+	addr        := flag.String("addr",         "127.0.0.1:7400", "Listen address (host:port)")
+	readTimeout := flag.Duration("read-timeout", 5*time.Second,  "Per-request DB query timeout")
+	write       := flag.Bool("write",          false,            "Enable write endpoints: POST /monitors, DELETE /monitors")
+	token       := flag.String("token",        "",               "Bearer token for auth on all requests; empty disables auth")
 	flag.Parse()
 
 	if *dsn == "" {
@@ -36,9 +38,21 @@ func main() {
 	mux.HandleFunc("GET /events", handleEvents(db, *readTimeout))
 	mux.HandleFunc("GET /healthz", handleHealthz(db))
 
+	if *write {
+		mux.HandleFunc("POST /monitors", handleMonitorsPost(db, *readTimeout))
+		mux.HandleFunc("DELETE /monitors", handleMonitorsDelete(db, *readTimeout))
+		log.Println("jetmon-bridge: write mode enabled")
+	}
+
+	var handler http.Handler = mux
+	if *token != "" {
+		handler = authMiddleware(*token, mux)
+		log.Println("jetmon-bridge: bearer token auth enabled")
+	}
+
 	srv := &http.Server{
 		Addr:    *addr,
-		Handler: mux,
+		Handler: handler,
 	}
 
 	go func() {
