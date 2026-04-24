@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"math/rand"
 	"time"
 
@@ -156,12 +157,28 @@ LIMIT  1`
 		return nil, fmt.Errorf("query events: %w", err)
 	}
 
-	oldStatus, newStatus := inferStatusTransition(siteStatus)
+	oldStatus, newStatus, err := inferStatusTransition(siteStatus)
+	if err != nil {
+		// Unexpected site_status in the DB — log and treat as no event rather than 500.
+		log.Printf("lookupEvents blog_id=%d: %v, skipping synthetic event", blogID, err)
+		return []event{}, nil
+	}
+
+	// Source reflects how the transition was detected:
+	// worker = initial down detection (unconfirmed), veriflier = confirmed down, jetmon = recovery.
+	source := "jetmon"
+	switch siteStatus {
+	case 0:
+		source = "worker"
+	case 2:
+		source = "veriflier"
+	}
+
 	e := event{
 		ID:        0,
 		BlogID:    blogID,
 		EventType: "status_transition",
-		Source:    "jetmon",
+		Source:    source,
 		OldStatus: &oldStatus,
 		NewStatus: &newStatus,
 		CreatedAt: lastChange.UTC().Format(time.RFC3339),
@@ -169,16 +186,18 @@ LIMIT  1`
 	return []event{e}, nil
 }
 
-// inferStatusTransition guesses old→new status from current site_status.
-// Jetmon v1 only persists the most recent state; this is best-effort for the last recorded transition.
-func inferStatusTransition(siteStatus int) (oldStatus, newStatus int) {
+// inferStatusTransition derives old→new status from the current site_status recorded in v1.
+// Jetmon v1 only persists the most recent state; this is best-effort for the last transition.
+func inferStatusTransition(siteStatus int) (oldStatus, newStatus int, err error) {
 	switch siteStatus {
-	case 1: // SITE_RUNNING — most recent transition was a recovery
-		return 2, 1
-	case 2: // SITE_CONFIRMED_DOWN — most recent transition was going down
-		return 1, 2
-	default: // SITE_DOWN (0) — transient down state, came from running
-		return 1, 0
+	case 1: // SITE_RUNNING — most recent transition was a recovery from confirmed_down
+		return 2, 1, nil
+	case 2: // SITE_CONFIRMED_DOWN — most recent transition was going down from running
+		return 1, 2, nil
+	case 0: // SITE_DOWN — transient unconfirmed down, came from running
+		return 1, 0, nil
+	default:
+		return 0, 0, fmt.Errorf("unexpected site_status %d", siteStatus)
 	}
 }
 
@@ -192,9 +211,19 @@ func createMonitor(ctx context.Context, db *sql.DB, monitorURL string, bucket in
 	}
 	defer tx.Rollback()
 
-	m, err := lookupAnyMonitor(ctx, tx, monitorURL)
+	// FOR UPDATE serializes concurrent createMonitor calls for the same URL.
+	// Without this, two simultaneous POSTs could both see "no row" and both INSERT,
+	// producing duplicate rows — v1 has no UNIQUE constraint on monitor_url.
+	const sqlLockURL = `
+SELECT blog_id, monitor_url, site_status, monitor_active
+FROM   jetpack_monitor_sites
+WHERE  monitor_url = ?
+ORDER BY monitor_active DESC
+LIMIT  1
+FOR UPDATE`
+	m, err := scanMonitorRow(tx.QueryRowContext(ctx, sqlLockURL, monitorURL))
 	if err != nil {
-		return nil, false, err
+		return nil, false, fmt.Errorf("lock monitor: %w", err)
 	}
 
 	if m != nil {
@@ -214,25 +243,21 @@ func createMonitor(ctx context.Context, db *sql.DB, monitorURL string, bucket in
 		return m, true, nil
 	}
 
-	// Insert with a random synthetic blog_id; retry on the rare collision.
-	for range 5 {
-		blogID := blogIDBase + rand.Int63n(blogIDRange)
-		if _, err := tx.ExecContext(ctx, sqlInsertMonitor, blogID, bucket, monitorURL); err != nil {
-			if isDuplicateKey(err) {
-				continue
-			}
-			return nil, false, fmt.Errorf("insert monitor: %w", err)
-		}
-		m, err = lookupAnyMonitor(ctx, tx, monitorURL)
-		if err != nil {
-			return nil, false, err
-		}
-		if err := tx.Commit(); err != nil {
-			return nil, false, fmt.Errorf("commit: %w", err)
-		}
-		return m, true, nil
+	// Assign a random synthetic blog_id. The range [2^62, 2^62+2^30) makes collision
+	// probability ~1/2^30 per insert; v1 has no UNIQUE on blog_id so a collision
+	// would silently insert a duplicate, but the probability is negligible in practice.
+	blogID := blogIDBase + rand.Int63n(blogIDRange)
+	if _, err := tx.ExecContext(ctx, sqlInsertMonitor, blogID, bucket, monitorURL); err != nil {
+		return nil, false, fmt.Errorf("insert monitor: %w", err)
 	}
-	return nil, false, fmt.Errorf("create monitor: failed to assign unique blog_id after retries")
+	m, err = lookupAnyMonitor(ctx, tx, monitorURL)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, false, fmt.Errorf("commit: %w", err)
+	}
+	return m, true, nil
 }
 
 // deactivateMonitor soft-deletes a monitor by setting monitor_active=0.

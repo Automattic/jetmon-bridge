@@ -164,6 +164,8 @@ Returns `status_transition` events for a monitor within a time window. Returns a
 
 **Jetmon v1 limitation:** Jetmon v1 has no audit log table. Events are synthesized from `jetpack_monitor_sites.last_status_change` and `site_status`. **At most one event is returned per call** — the most recent transition recorded for the monitor. If that transition's timestamp falls outside `[since, until)`, the response is `[]`. The `old_status` and `new_status` fields are inferred from the current `site_status` value (best-effort).
 
+**Poll frequency requirement:** Because `last_status_change` is overwritten on every transition, intermediate state changes are invisible once the next transition occurs. To observe every transition, the adapter must poll `/events` more frequently than Jetmon's check interval (default 5 minutes). A poll window shorter than one check interval guarantees each transition appears in exactly one call's result set; longer windows may silently miss transitions where a site went down and recovered between polls.
+
 **Parameters:**
 
 | Name      | In    | Required | Description                        |
@@ -202,7 +204,7 @@ Returns `status_transition` events for a monitor within a time window. Returns a
 | `detail`     | string or null  | Always `null` in v1                                        |
 | `created_at` | string          | `last_status_change` timestamp (RFC3339, UTC)              |
 
-**Status codes:** `0` = down (unconfirmed), `1` = running, `2` = confirmed_down.
+**Status codes:** `1` = running, `2` = confirmed_down. `0` = down (unconfirmed, transient) — this appears in `new_status` when Jetmon's worker has detected a failure but the veriflier has not yet confirmed it. Uptime-bench adapters must handle `0` as a distinct value; treating it as equivalent to `2` (confirmed_down) is the conservative choice.
 
 **Response 400** — missing or invalid parameters.
 

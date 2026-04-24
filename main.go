@@ -60,6 +60,9 @@ func main() {
 		mux.HandleFunc("POST /monitors", handleMonitorsPost(writeDB, *bucket, *readTimeout))
 		mux.HandleFunc("DELETE /monitors", handleMonitorsDelete(writeDB, *readTimeout))
 		log.Printf("jetmon-bridge: write mode enabled (bucket=%d)", *bucket)
+		if *bucket == 0 {
+			log.Println("WARNING: -bucket=0 is the default; verify this bucket is assigned to active Jetmon workers — monitors in an unowned bucket are never checked")
+		}
 	}
 
 	var handler http.Handler = mux
