@@ -160,7 +160,9 @@ Soft-deletes a monitor by setting `monitor_active = 0`. A subsequent `GET /monit
 
 ### `GET /events?blog_id=<id>&since=<ts>&until=<ts>`
 
-Returns all `status_transition` audit log events for a monitor within a time window. Returns an empty array `[]` (not `null`) when no events match.
+Returns `status_transition` events for a monitor within a time window. Returns an empty array `[]` (not `null`) when no events match.
+
+**Jetmon v1 limitation:** Jetmon v1 has no audit log table. Events are synthesized from `jetpack_monitor_sites.last_status_change` and `site_status`. **At most one event is returned per call** — the most recent transition recorded for the monitor. If that transition's timestamp falls outside `[since, until)`, the response is `[]`. The `old_status` and `new_status` fields are inferred from the current `site_status` value (best-effort).
 
 **Parameters:**
 
@@ -175,10 +177,10 @@ Returns all `status_transition` audit log events for a monitor within a time win
 ```json
 [
   {
-    "id":         42,
+    "id":         0,
     "blog_id":    1001,
     "event_type": "status_transition",
-    "source":     "worker-01",
+    "source":     "jetmon",
     "http_code":  null,
     "old_status": 1,
     "new_status": 2,
@@ -190,17 +192,17 @@ Returns all `status_transition` audit log events for a monitor within a time win
 
 | Field        | Type            | Description                                                |
 |--------------|-----------------|------------------------------------------------------------|
-| `id`         | integer         | Audit log row ID                                           |
+| `id`         | integer         | Always `0` in v1 (no audit log row)                        |
 | `blog_id`    | integer         | Monitor blog_id                                            |
-| `event_type` | string          | Always `"status_transition"` for this endpoint             |
-| `source`     | string          | Jetmon worker or verifier that recorded the event          |
-| `http_code`  | integer or null | HTTP status code at time of check, if available            |
-| `old_status` | integer or null | Status before transition: `1` = running, `2` = confirmed_down |
-| `new_status` | integer or null | Status after transition: same codes as above               |
-| `detail`     | string or null  | Optional diagnostic message                                |
-| `created_at` | string          | Event timestamp (RFC3339, UTC)                             |
+| `event_type` | string          | Always `"status_transition"`                               |
+| `source`     | string          | Always `"jetmon"` in v1                                    |
+| `http_code`  | integer or null | Always `null` in v1 (not persisted to DB)                  |
+| `old_status` | integer or null | Status before transition (inferred): `1` = running, `2` = confirmed_down |
+| `new_status` | integer or null | Status after transition (inferred): same codes as above    |
+| `detail`     | string or null  | Always `null` in v1                                        |
+| `created_at` | string          | `last_status_change` timestamp (RFC3339, UTC)              |
 
-**Status codes:** `1` = running/up, `2` = confirmed_down.
+**Status codes:** `0` = down (unconfirmed), `1` = running, `2` = confirmed_down.
 
 **Response 400** — missing or invalid parameters.
 
@@ -281,4 +283,4 @@ auth       = { token = "your-bearer-token", write_mode = "false" }
 
 Set `write_mode = "true"` to let uptime-bench create and clean up monitors automatically. Requires the bridge to be started with `-write -write-dsn <primary-dsn> -bucket <n> -token your-bearer-token`.
 
-**Timing note:** new monitors are inserted with `last_checked_at` set 2 minutes in the past so Jetmon's worker picks them up on its next check cycle (within ~1 minute for the default 1-minute check interval). Allow at least 2–3 minutes between `Provision` and the start of the test failure window to ensure the monitor has been checked at least once and Jetmon has a baseline status for it.
+**Timing note:** Jetmon v1 workers pick up all active monitors in their bucket on every work round, with no `last_checked_at` filter. New monitors are immediately eligible after insertion. The default `check_interval` is 5 minutes; allow at least one full round (5–10 minutes) between `Provision` and the start of the test failure window to ensure the monitor has been checked at least once and Jetmon has a baseline status for it.

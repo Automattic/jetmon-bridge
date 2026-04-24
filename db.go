@@ -65,9 +65,7 @@ type rowQueryer interface {
 }
 
 const sqlMonitor = `
-SELECT blog_id, monitor_url, site_status, monitor_active,
-       COALESCE(check_keyword, '')         AS keyword,
-       COALESCE(redirect_policy, 'follow') AS redirect_policy
+SELECT blog_id, monitor_url, site_status, monitor_active
 FROM   jetpack_monitor_sites
 WHERE  monitor_url = ?
   AND  monitor_active = 1
@@ -76,36 +74,18 @@ LIMIT  1`
 // sqlMonitorAny finds any monitor regardless of active status, preferring active rows.
 // Used in write-mode create/reactivate flows to detect duplicates.
 const sqlMonitorAny = `
-SELECT blog_id, monitor_url, site_status, monitor_active,
-       COALESCE(check_keyword, '')         AS keyword,
-       COALESCE(redirect_policy, 'follow') AS redirect_policy
+SELECT blog_id, monitor_url, site_status, monitor_active
 FROM   jetpack_monitor_sites
 WHERE  monitor_url = ?
 ORDER BY monitor_active DESC
 LIMIT  1`
 
-const sqlEvents = `
-SELECT
-    jal.id,
-    jal.blog_id,
-    jal.event_type,
-    jal.source,
-    jal.http_code,
-    jal.old_status,
-    jal.new_status,
-    jal.detail,
-    jal.created_at
-FROM jetmon_audit_log jal
-WHERE jal.blog_id    = ?
-  AND jal.event_type = 'status_transition'
-  AND jal.created_at >= ?
-  AND jal.created_at  < ?
-ORDER BY jal.created_at ASC`
-
+// sqlInsertMonitor inserts a new monitor into the v1 jetpack_monitor_sites table.
+// check_interval=5 matches the v1 default (5-minute check cycle).
 const sqlInsertMonitor = `
 INSERT INTO jetpack_monitor_sites
-    (blog_id, bucket_no, monitor_url, monitor_active, site_status, check_interval, redirect_policy, last_checked_at)
-VALUES (?, ?, ?, 1, 1, 1, 'follow', ?)`
+    (blog_id, bucket_no, monitor_url, monitor_active, site_status, check_interval)
+VALUES (?, ?, ?, 1, 1, 5)`
 
 const sqlReactivateMonitor = `
 UPDATE jetpack_monitor_sites SET monitor_active = 1 WHERE monitor_url = ?`
@@ -123,7 +103,7 @@ const (
 func scanMonitorRow(row *sql.Row) (*monitor, error) {
 	var m monitor
 	var active int8
-	err := row.Scan(&m.BlogID, &m.MonitorURL, &m.SiteStatus, &active, &m.Keyword, &m.RedirectPolicy)
+	err := row.Scan(&m.BlogID, &m.MonitorURL, &m.SiteStatus, &active)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -131,6 +111,8 @@ func scanMonitorRow(row *sql.Row) (*monitor, error) {
 		return nil, fmt.Errorf("scan monitor: %w", err)
 	}
 	m.MonitorActive = active != 0
+	m.Keyword = ""
+	m.RedirectPolicy = "follow"
 	return &m, nil
 }
 
@@ -152,47 +134,52 @@ func lookupAnyMonitor(ctx context.Context, q rowQueryer, url string) (*monitor, 
 	return m, nil
 }
 
+// lookupEvents returns status_transition events for a monitor within the given window.
+// Jetmon v1 does not have an audit log table; events are synthesized from the monitor's
+// current site_status and last_status_change. At most one event is returned per call.
 func lookupEvents(ctx context.Context, db *sql.DB, blogID int64, since, until time.Time) ([]event, error) {
-	rows, err := db.QueryContext(ctx, sqlEvents, blogID, since, until)
+	const q = `
+SELECT site_status, last_status_change
+FROM   jetpack_monitor_sites
+WHERE  blog_id            = ?
+  AND  last_status_change >= ?
+  AND  last_status_change  < ?
+LIMIT  1`
+
+	var siteStatus int
+	var lastChange time.Time
+	err := db.QueryRowContext(ctx, q, blogID, since, until).Scan(&siteStatus, &lastChange)
+	if errors.Is(err, sql.ErrNoRows) {
+		return []event{}, nil
+	}
 	if err != nil {
 		return nil, fmt.Errorf("query events: %w", err)
 	}
-	defer rows.Close()
 
-	events := make([]event, 0)
-	for rows.Next() {
-		var e event
-		var httpCode, oldStatus, newStatus sql.NullInt32
-		var detail sql.NullString
-		var createdAt time.Time
-		if err := rows.Scan(
-			&e.ID, &e.BlogID, &e.EventType, &e.Source,
-			&httpCode, &oldStatus, &newStatus, &detail, &createdAt,
-		); err != nil {
-			return nil, fmt.Errorf("scan event: %w", err)
-		}
-		if httpCode.Valid {
-			v := int(httpCode.Int32)
-			e.HTTPCode = &v
-		}
-		if oldStatus.Valid {
-			v := int(oldStatus.Int32)
-			e.OldStatus = &v
-		}
-		if newStatus.Valid {
-			v := int(newStatus.Int32)
-			e.NewStatus = &v
-		}
-		if detail.Valid {
-			e.Detail = &detail.String
-		}
-		e.CreatedAt = createdAt.UTC().Format(time.RFC3339)
-		events = append(events, e)
+	oldStatus, newStatus := inferStatusTransition(siteStatus)
+	e := event{
+		ID:        0,
+		BlogID:    blogID,
+		EventType: "status_transition",
+		Source:    "jetmon",
+		OldStatus: &oldStatus,
+		NewStatus: &newStatus,
+		CreatedAt: lastChange.UTC().Format(time.RFC3339),
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate events: %w", err)
+	return []event{e}, nil
+}
+
+// inferStatusTransition guesses old→new status from current site_status.
+// Jetmon v1 only persists the most recent state; this is best-effort for the last recorded transition.
+func inferStatusTransition(siteStatus int) (oldStatus, newStatus int) {
+	switch siteStatus {
+	case 1: // SITE_RUNNING — most recent transition was a recovery
+		return 2, 1
+	case 2: // SITE_CONFIRMED_DOWN — most recent transition was going down
+		return 1, 2
+	default: // SITE_DOWN (0) — transient down state, came from running
+		return 1, 0
 	}
-	return events, nil
 }
 
 // createMonitor upserts a monitor: inserts a new one or re-activates a deactivated one.
@@ -228,12 +215,9 @@ func createMonitor(ctx context.Context, db *sql.DB, monitorURL string, bucket in
 	}
 
 	// Insert with a random synthetic blog_id; retry on the rare collision.
-	// last_checked_at is set to 2 minutes ago so Jetmon's worker immediately sees the
-	// monitor as overdue for its first check rather than leaving it stuck on NULL.
-	lastChecked := time.Now().Add(-2 * time.Minute)
 	for range 5 {
 		blogID := blogIDBase + rand.Int63n(blogIDRange)
-		if _, err := tx.ExecContext(ctx, sqlInsertMonitor, blogID, bucket, monitorURL, lastChecked); err != nil {
+		if _, err := tx.ExecContext(ctx, sqlInsertMonitor, blogID, bucket, monitorURL); err != nil {
 			if isDuplicateKey(err) {
 				continue
 			}

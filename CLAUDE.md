@@ -43,32 +43,51 @@ The binary accepts three flags:
 
 ---
 
-## Schema facts (from the Jetmon repo)
+## Schema facts (Jetmon v1)
 
-These were verified against `migrations/001_jetmon2.sql` and `internal/checker/checker.go` in the Jetmon repo. **Do not guess — use these.**
+Verified against the `v1` branch of the Jetmon repo (`README.md` schema block and `lib/database.js`). **Do not guess — use these. Do not apply v2 assumptions.**
 
-### Column names
+### jetpack_monitor_sites — the only table in v1
 
-- `jetmon_audit_log` uses **`created_at`** (TIMESTAMP), not `occurred_at`. The API response key is `occurred_at`; the mapping lives in the SQL query alias and Go struct tag.
-- `old_status` and `new_status` in `jetmon_audit_log` are **TINYINT**, not varchar. They are mapped to strings in Go:
-  - `1` → `"running"`
-  - `2` → `"confirmed_down"`
-- All timing columns (`dns_ms`, `tcp_ms`, `tls_ms`, `ttfb_ms`, `rtt_ms`) are **INT**, not float.
+```sql
+CREATE TABLE `jetpack_monitor_sites` (
+    `jetpack_monitor_site_id` bigint(20) unsigned NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    `blog_id`                 bigint(20) unsigned NOT NULL,
+    `bucket_no`               smallint(2) unsigned NOT NULL,
+    `monitor_url`             varchar(300) NOT NULL,
+    `monitor_active`          tinyint(1) unsigned NOT NULL DEFAULT 1,
+    `site_status`             tinyint(1) unsigned NOT NULL DEFAULT 1,
+    `last_status_change`      timestamp NULL DEFAULT current_timestamp(),
+    `check_interval`          tinyint(1) unsigned NOT NULL DEFAULT 5,
+    INDEX `blog_id_monitor_url` (`blog_id`, `monitor_url`),
+    INDEX `bucket_no_monitor_active_check_interval` (`bucket_no`, `monitor_active`, `check_interval`)
+);
+```
 
-### Error codes
+### Status codes
 
-Defined in `internal/checker/checker.go` in the Jetmon repo. Note: ErrorTimeout (1) and ErrorConnect (2) are reversed from what you might expect.
+| Value | Constant | Meaning |
+|-------|----------|---------|
+| 0 | `SITE_DOWN` | Initial down detection (unconfirmed) |
+| 1 | `SITE_RUNNING` | Site is up |
+| 2 | `SITE_CONFIRMED_DOWN` | Down, confirmed by veriflier |
 
-| Code | Constant | Description |
-|------|----------|-------------|
-| 0 | `ErrorNone` | Success |
-| 1 | `ErrorTimeout` | Context deadline exceeded |
-| 2 | `ErrorConnect` | TCP connection refused or DNS failure |
-| 3 | `ErrorSSL` | TLS handshake error |
-| 4 | `ErrorRedirect` | Redirect when redirect_policy=fail |
-| 5 | `ErrorKeyword` | Body did not contain required keyword |
-| 6 | `ErrorTLSExpired` | Certificate past NotAfter date |
-| 7 | `ErrorTLSDeprecated` | TLS 1.0/1.1 detected (advisory — not a hard failure) |
+### Columns that do NOT exist in v1 (v2 additions — never reference these)
+
+- `check_keyword`, `redirect_policy`, `last_checked_at`, `last_alert_sent_at`
+- `ssl_expiry_date`, `maintenance_start`, `maintenance_end`, `custom_headers`
+- `timeout_seconds`, `alert_cooldown_minutes`
+
+### Tables that do NOT exist in v1 (v2 only — never reference these)
+
+- `jetmon_audit_log`
+- `jetmon_check_history`
+- `jetmon_false_positives`
+- `jetmon_hosts`
+
+### /events limitation
+
+Jetmon v1 has no audit log. The `/events` endpoint synthesizes a single `status_transition` event from `last_status_change` and `site_status` when the transition timestamp falls within the query window. At most one event is returned per call. The `old_status`/`new_status` values are inferred from the current `site_status` (best-effort). This is the maximum precision available from v1 data.
 
 ---
 
@@ -89,9 +108,9 @@ Defined in `internal/checker/checker.go` in the Jetmon repo. Note: ErrorTimeout 
 
 ### Database
 
-- SELECT only. No INSERT, UPDATE, or DELETE anywhere in this codebase.
-- Always use the context-aware query methods (`QueryContext`, `QueryRowContext`) so DB calls respect request cancellation.
-- Connect to a read replica, never the primary.
+- Read replica DSN (`-dsn`) is for all GET endpoints. Write DSN (`-write-dsn`) must point at the primary.
+- Always use the context-aware query methods (`QueryContext`, `QueryRowContext`, `ExecContext`) so DB calls respect request cancellation.
+- Write operations (INSERT/UPDATE via write mode) go through the write DSN only. Never write through the read replica DSN.
 
 ---
 
@@ -100,8 +119,8 @@ Defined in `internal/checker/checker.go` in the Jetmon repo. Note: ErrorTimeout 
 These are decided. Do not re-litigate them.
 
 - **Three endpoints only:** `/time`, `/monitors`, `/events`. No additions without explicit discussion.
-- **Always-on model:** jetmon-bridge never creates or deletes Jetmon monitors. Provision is a lookup, not a write.
-- **No authentication:** private network deployment only. Do not add auth middleware.
+- **Write mode is optional:** read-only mode (default) does lookups only. Write mode (`-write`) enables POST/DELETE. A separate primary DSN (`-write-dsn`) is required for write mode.
+- **Authentication is optional:** `-token` enables Bearer token auth on all requests. Strongly recommended when write mode is enabled.
 - **Read replica:** the DSN must point at a replica. The binary should not enforce this, but never suggest or assume primary access.
 - **Service ID:** the uptime-bench adapter for this bridge uses service ID `jetmon-v1`. Do not conflate with `jetmon-v2` (the future direct-API adapter).
 
