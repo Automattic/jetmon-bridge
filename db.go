@@ -205,25 +205,40 @@ func inferStatusTransition(siteStatus int) (oldStatus, newStatus int, err error)
 // Returns the monitor and true if it was newly created or reactivated; false if already active.
 // bucket must match the Jetmon worker bucket that should process this monitor.
 func createMonitor(ctx context.Context, db *sql.DB, monitorURL string, bucket int) (*monitor, bool, error) {
-	tx, err := db.BeginTx(ctx, nil)
+	// Pin to a single connection so the advisory lock and the transaction share the same
+	// MySQL session. Advisory locks in MySQL are connection-scoped.
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return nil, false, fmt.Errorf("get connection: %w", err)
+	}
+	defer conn.Close()
+
+	// Per-URL advisory lock serializes concurrent POSTs for the same URL without
+	// locking unrelated rows. v1's composite index (blog_id, monitor_url) can't be
+	// used for a WHERE monitor_url=? lookup, so FOR UPDATE would scan the whole table;
+	// GET_LOCK avoids that. SHA2 of the prefixed URL keeps the lock name ≤ 64 chars.
+	var lockAcquired int
+	if err := conn.QueryRowContext(ctx,
+		"SELECT GET_LOCK(SHA2(CONCAT('jetmon-bridge:', ?), 256), 5)",
+		monitorURL,
+	).Scan(&lockAcquired); err != nil {
+		return nil, false, fmt.Errorf("acquire advisory lock: %w", err)
+	}
+	if lockAcquired != 1 {
+		return nil, false, fmt.Errorf("acquire advisory lock: timed out waiting for URL lock")
+	}
+	defer conn.ExecContext(context.Background(), //nolint:errcheck
+		"SELECT RELEASE_LOCK(SHA2(CONCAT('jetmon-bridge:', ?), 256))", monitorURL)
+
+	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, false, fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback()
 
-	// FOR UPDATE serializes concurrent createMonitor calls for the same URL.
-	// Without this, two simultaneous POSTs could both see "no row" and both INSERT,
-	// producing duplicate rows — v1 has no UNIQUE constraint on monitor_url.
-	const sqlLockURL = `
-SELECT blog_id, monitor_url, site_status, monitor_active
-FROM   jetpack_monitor_sites
-WHERE  monitor_url = ?
-ORDER BY monitor_active DESC
-LIMIT  1
-FOR UPDATE`
-	m, err := scanMonitorRow(tx.QueryRowContext(ctx, sqlLockURL, monitorURL))
+	m, err := lookupAnyMonitor(ctx, tx, monitorURL)
 	if err != nil {
-		return nil, false, fmt.Errorf("lock monitor: %w", err)
+		return nil, false, err
 	}
 
 	if m != nil {
@@ -244,20 +259,24 @@ FOR UPDATE`
 	}
 
 	// Assign a random synthetic blog_id. The range [2^62, 2^62+2^30) makes collision
-	// probability ~1/2^30 per insert; v1 has no UNIQUE on blog_id so a collision
-	// would silently insert a duplicate, but the probability is negligible in practice.
+	// probability ~1/2^30 per insert; v1 has no UNIQUE on blog_id so a collision would
+	// silently insert a duplicate, but the probability is negligible in practice.
 	blogID := blogIDBase + rand.Int63n(blogIDRange)
 	if _, err := tx.ExecContext(ctx, sqlInsertMonitor, blogID, bucket, monitorURL); err != nil {
 		return nil, false, fmt.Errorf("insert monitor: %w", err)
 	}
-	m, err = lookupAnyMonitor(ctx, tx, monitorURL)
-	if err != nil {
-		return nil, false, err
-	}
 	if err := tx.Commit(); err != nil {
 		return nil, false, fmt.Errorf("commit: %w", err)
 	}
-	return m, true, nil
+	// All field values are known from the INSERT literals — no round-trip needed.
+	return &monitor{
+		BlogID:         blogID,
+		MonitorURL:     monitorURL,
+		SiteStatus:     1,
+		MonitorActive:  true,
+		Keyword:        "",
+		RedirectPolicy: "follow",
+	}, true, nil
 }
 
 // deactivateMonitor soft-deletes a monitor by setting monitor_active=0.
@@ -274,7 +293,3 @@ func deactivateMonitor(ctx context.Context, db *sql.DB, monitorURL string) (bool
 	return n > 0, nil
 }
 
-func isDuplicateKey(err error) bool {
-	var mysqlErr *mysql.MySQLError
-	return errors.As(err, &mysqlErr) && mysqlErr.Number == 1062
-}

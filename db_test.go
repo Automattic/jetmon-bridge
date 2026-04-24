@@ -1,32 +1,9 @@
 package main
 
 import (
-	"errors"
-	"fmt"
 	"math/rand"
 	"testing"
-
-	"github.com/go-sql-driver/mysql"
 )
-
-func TestIsDuplicateKey(t *testing.T) {
-	dup := &mysql.MySQLError{Number: 1062, Message: "Duplicate entry 'x' for key 'idx_blog_id'"}
-
-	if !isDuplicateKey(dup) {
-		t.Fatal("expected true for MySQL error 1062")
-	}
-	if isDuplicateKey(&mysql.MySQLError{Number: 1045, Message: "Access denied"}) {
-		t.Fatal("expected false for MySQL error 1045")
-	}
-	if isDuplicateKey(errors.New("some generic error")) {
-		t.Fatal("expected false for non-MySQL error")
-	}
-
-	// errors.As must traverse wrapping chains.
-	if !isDuplicateKey(fmt.Errorf("insert monitor: %w", dup)) {
-		t.Fatal("expected true for wrapped duplicate key error")
-	}
-}
 
 func TestBlogIDRange_Constants(t *testing.T) {
 	if blogIDBase != int64(1)<<62 {
