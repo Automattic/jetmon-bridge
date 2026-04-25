@@ -112,7 +112,6 @@ func scanMonitorRow(row *sql.Row) (*monitor, error) {
 		return nil, fmt.Errorf("scan monitor: %w", err)
 	}
 	m.MonitorActive = active != 0
-	m.Keyword = ""
 	m.RedirectPolicy = "follow"
 	return &m, nil
 }
@@ -243,9 +242,6 @@ func createMonitor(ctx context.Context, db *sql.DB, monitorURL string, bucket in
 
 	if m != nil {
 		if m.MonitorActive {
-			if err := tx.Commit(); err != nil {
-				return nil, false, fmt.Errorf("commit: %w", err)
-			}
 			return m, false, nil
 		}
 		if _, err := tx.ExecContext(ctx, sqlReactivateMonitor, monitorURL); err != nil {

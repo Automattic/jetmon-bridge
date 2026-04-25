@@ -144,9 +144,11 @@ func handleEvents(db *sql.DB, timeout time.Duration) http.HandlerFunc {
 	}
 }
 
-func handleHealthz(db *sql.DB) http.HandlerFunc {
+func handleHealthz(db *sql.DB, timeout time.Duration) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if err := db.PingContext(r.Context()); err != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), timeout)
+		defer cancel()
+		if err := db.PingContext(ctx); err != nil {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "error", "error": err.Error()})
 			return
 		}
@@ -157,8 +159,8 @@ func handleHealthz(db *sql.DB) http.HandlerFunc {
 // authMiddleware rejects requests that don't carry the expected Bearer token.
 func authMiddleware(token string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		auth := r.Header.Get("Authorization")
-		if !strings.HasPrefix(auth, "Bearer ") || strings.TrimPrefix(auth, "Bearer ") != token {
+		got, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if !ok || got != token {
 			writeJSON(w, http.StatusUnauthorized, errBody("unauthorized"))
 			return
 		}

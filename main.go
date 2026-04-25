@@ -54,7 +54,7 @@ func main() {
 	mux.HandleFunc("GET /time", handleTime)
 	mux.HandleFunc("GET /monitors", handleMonitors(db, *readTimeout))
 	mux.HandleFunc("GET /events", handleEvents(db, *readTimeout))
-	mux.HandleFunc("GET /healthz", handleHealthz(db))
+	mux.HandleFunc("GET /healthz", handleHealthz(db, *readTimeout))
 
 	if *write {
 		mux.HandleFunc("POST /monitors", handleMonitorsPost(writeDB, *bucket, *readTimeout))
