@@ -12,7 +12,15 @@ import (
 	"time"
 )
 
+func init() {
+	flag.CommandLine.Usage = func() {
+		fmt.Fprintf(os.Stderr, "jetmon-bridge %s\n\nUsage:\n", version)
+		flag.PrintDefaults()
+	}
+}
+
 func main() {
+	showVersion := flag.Bool("version",        false,            "Print version and exit")
 	dsn         := flag.String("dsn",          "",               "MySQL DSN for the Jetmon read replica (required)")
 	writeDSN    := flag.String("write-dsn",    "",               "MySQL DSN for write operations (primary); required when -write is set")
 	addr        := flag.String("addr",         "127.0.0.1:7400", "Listen address (host:port)")
@@ -21,6 +29,11 @@ func main() {
 	token       := flag.String("token",        "",               "Bearer token for auth on all requests; empty disables auth")
 	bucket      := flag.Int("bucket",          0,                "Jetmon bucket number assigned to new monitors (must match an active worker bucket)")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(version)
+		os.Exit(0)
+	}
 
 	if *dsn == "" {
 		fmt.Fprintln(os.Stderr, "jetmon-bridge: -dsn is required")
@@ -77,7 +90,7 @@ func main() {
 	}
 
 	go func() {
-		log.Printf("jetmon-bridge listening on %s", *addr)
+		log.Printf("jetmon-bridge %s listening on %s", version, *addr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("listen: %v", err)
 		}

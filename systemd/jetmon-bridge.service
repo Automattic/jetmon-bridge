@@ -1,6 +1,7 @@
 [Unit]
 Description=jetmon-bridge — read-only HTTP API bridge for Jetmon 1
-After=network.target
+After=network-online.target
+Wants=network-online.target
 Documentation=https://github.com/Automattic/jetmon-bridge
 
 [Service]
@@ -23,6 +24,8 @@ ExecStart=/opt/jetmon-bridge/jetmon-bridge \
 
 Restart=on-failure
 RestartSec=5s
+StartLimitIntervalSec=60s
+StartLimitBurst=5
 
 # Allow in-flight requests up to 30 s to drain before SIGKILL.
 TimeoutStopSec=35s
@@ -31,7 +34,8 @@ KillMode=mixed
 # Hardening
 NoNewPrivileges=true
 PrivateTmp=true
-ProtectSystem=full
+ProtectSystem=strict
+ReadWritePaths=/opt/jetmon-bridge
 ProtectHome=true
 
 [Install]

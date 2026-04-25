@@ -3,6 +3,7 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile
+    restart: unless-stopped
     command:
       - -dsn
       - "${JETMON_DSN:-}"

@@ -23,8 +23,14 @@ fi
 DEPLOY_DIR="${DEPLOY_DIR:-/opt/jetmon-bridge}"
 BINARY="bin/jetmon-bridge-linux-amd64"
 
-echo "Building jetmon-bridge for linux/amd64..."
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o "${BINARY}" .
+if ! command -v go &>/dev/null; then
+  echo "error: 'go' not found locally. Install Go 1.22+ to build the binary." >&2
+  exit 1
+fi
+
+BUILD_VERSION="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
+echo "Building jetmon-bridge ${BUILD_VERSION} for linux/amd64..."
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w -X main.version=${BUILD_VERSION}" -o "${BINARY}" .
 
 echo "Uploading binary to ${REMOTE}:${DEPLOY_DIR}/..."
 ssh "${REMOTE}" "mkdir -p ${DEPLOY_DIR}"

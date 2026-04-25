@@ -38,9 +38,10 @@ if ! command -v go &>/dev/null; then
   exit 1
 fi
 
-echo "==> Building jetmon-bridge for linux/amd64..."
+BUILD_VERSION="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
+echo "==> Building jetmon-bridge ${BUILD_VERSION} for linux/amd64..."
 mkdir -p bin
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o "${BINARY}" .
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w -X main.version=${BUILD_VERSION}" -o "${BINARY}" .
 
 # ── 2. Upload files ───────────────────────────────────────────────────────────
 
