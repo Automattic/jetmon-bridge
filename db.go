@@ -89,10 +89,18 @@ INSERT INTO jetpack_monitor_sites
 VALUES (?, ?, ?, 1, 1, 5)`
 
 const sqlReactivateMonitor = `
-UPDATE jetpack_monitor_sites SET monitor_active = 1 WHERE monitor_url = ?`
+UPDATE jetpack_monitor_sites
+SET    monitor_active = 1,
+       site_status = 1,
+       last_status_change = NOW()
+WHERE  monitor_url = ?`
 
 const sqlDeactivateMonitor = `
-UPDATE jetpack_monitor_sites SET monitor_active = 0 WHERE monitor_url = ?`
+UPDATE jetpack_monitor_sites
+SET    monitor_active = 0,
+       site_status = 1,
+       last_status_change = NOW()
+WHERE  monitor_url = ?`
 
 // Synthetic blog_id range for test monitors: [2^62, 2^62+2^30).
 // Keeps test IDs well clear of real WordPress blog_ids.
@@ -241,15 +249,17 @@ func createMonitor(ctx context.Context, db *sql.DB, monitorURL string, bucket in
 	}
 
 	if m != nil {
-		if m.MonitorActive {
-			return m, false, nil
-		}
 		if _, err := tx.ExecContext(ctx, sqlReactivateMonitor, monitorURL); err != nil {
 			return nil, false, fmt.Errorf("reactivate monitor: %w", err)
 		}
+		createdOrReactivated := !m.MonitorActive
 		m.MonitorActive = true
+		m.SiteStatus = 1
 		if err := tx.Commit(); err != nil {
 			return nil, false, fmt.Errorf("commit: %w", err)
+		}
+		if !createdOrReactivated {
+			return m, false, nil
 		}
 		return m, true, nil
 	}
@@ -288,4 +298,3 @@ func deactivateMonitor(ctx context.Context, db *sql.DB, monitorURL string) (bool
 	}
 	return n > 0, nil
 }
-

@@ -119,13 +119,13 @@ Request body:
 {"url": "https://bench-target-01.example.com"}
 ```
 
-Returns `201 Created` with the monitor object if a new monitor was created or a deactivated one was reactivated. Returns `200 OK` if the monitor already exists and is active.
+Returns `201 Created` with the monitor object if a new monitor was created or a deactivated one was reactivated. Returns `200 OK` if the monitor already exists and is active. Existing rows are reset to `site_status = 1` with a fresh `last_status_change` before returning, so uptime-bench write-mode runs start from a clean running baseline.
 
 ---
 
 ### `DELETE /monitors?url=<url>` (write mode only)
 
-Deactivates the monitor for the given URL (sets `monitor_active = 0`). Requires `-write` to be enabled.
+Deactivates the monitor for the given URL (sets `monitor_active = 0`) and resets `site_status = 1` with a fresh `last_status_change`. Requires `-write` to be enabled.
 
 Returns `204 No Content` on success, `404` if no monitor exists for the URL.
 

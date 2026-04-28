@@ -112,7 +112,7 @@ Looks up an **active** monitor by its target URL.
 
 *Write mode only.*
 
-Creates a new monitor for the given URL, or re-activates a previously deactivated one. Idempotent: if an active monitor already exists, it is returned unchanged.
+Creates a new monitor for the given URL, or re-activates a previously deactivated one. Idempotent: if an active monitor already exists, it is returned with status 200.
 
 New monitors are assigned a synthetic `blog_id` in the range `[2^62, 2^62 + 2^30)` to avoid colliding with real WordPress blog IDs.
 
@@ -130,6 +130,8 @@ New monitors are assigned a synthetic `blog_id` in the range `[2^62, 2^62 + 2^30
 
 **Response 200** — monitor already existed and was active. Body is the same shape as `GET /monitors`.
 
+For existing rows, POST resets `site_status = 1` and `last_status_change = NOW()` before returning. This gives uptime-bench write-mode runs a clean running baseline instead of inheriting a prior test's confirmed-down or transient-down state.
+
 **Response 400** — missing or invalid request body.
 
 **Response 405** — bridge is not running in write mode.
@@ -140,7 +142,7 @@ New monitors are assigned a synthetic `blog_id` in the range `[2^62, 2^62 + 2^30
 
 *Write mode only.*
 
-Soft-deletes a monitor by setting `monitor_active = 0`. A subsequent `GET /monitors?url=` for the same URL returns 404. A subsequent `POST /monitors` reactivates it.
+Soft-deletes a monitor by setting `monitor_active = 0`, and also resets `site_status = 1` with a fresh `last_status_change`. A subsequent `GET /monitors?url=` for the same URL returns 404. A subsequent `POST /monitors` reactivates it from a clean running baseline.
 
 **Parameters:**
 
