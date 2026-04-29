@@ -266,6 +266,8 @@ When running in read-only mode (default), Jetmon monitors must be created by an 
 
 When running in write mode (`-write`), the bridge can create monitors on demand via `POST /monitors`. The `-bucket` flag must be set to an active Jetmon worker bucket so the created monitors are picked up for checking.
 
+Write-mode monitors use synthetic `blog_id` values in `[1,500,000,000, 2,000,000,000)`. Keep this range below Jetmon v1's signed 32-bit verifier limit; larger IDs do not reliably round-trip through v1's verifier and status update path.
+
 ---
 
 ## Non-goals

@@ -120,7 +120,7 @@ Looks up an **active** monitor by its target URL.
 
 Creates a new monitor for the given URL, or re-activates a previously deactivated one. Idempotent: if an active monitor already exists, it is returned with status 200.
 
-New monitors are assigned a synthetic `blog_id` in the range `[2^62, 2^62 + 2^30)` to avoid colliding with real WordPress blog IDs.
+New monitors are assigned a synthetic `blog_id` in the range `[1,500,000,000, 2,000,000,000)`. The range is reserved for benchmark-created monitors, high enough to avoid typical WordPress blog IDs, and below Jetmon v1's signed 32-bit verifier limit.
 
 **Request body (JSON):**
 

@@ -95,6 +95,14 @@ SET    monitor_active = 1,
        last_status_change = NOW()
 WHERE  monitor_url = ?`
 
+const sqlReactivateMonitorWithBlogID = `
+UPDATE jetpack_monitor_sites
+SET    blog_id = ?,
+       monitor_active = 1,
+       site_status = 1,
+       last_status_change = NOW()
+WHERE  monitor_url = ?`
+
 const sqlDeactivateMonitor = `
 UPDATE jetpack_monitor_sites
 SET    monitor_active = 0,
@@ -102,11 +110,23 @@ SET    monitor_active = 0,
        last_status_change = NOW()
 WHERE  monitor_url = ?`
 
-// Synthetic blog_id range for test monitors: [2^62, 2^62+2^30).
-// Keeps test IDs well clear of real WordPress blog_ids.
+const sqlBlogIDExists = `
+SELECT 1
+FROM   jetpack_monitor_sites
+WHERE  blog_id = ?
+LIMIT  1`
+
+// Synthetic blog_id range for test monitors: [1.5B, 2B).
+//
+// The upper bound intentionally stays below signed int32 max. Jetmon v1's
+// verifier stores blog_id in an int and parses JSON values with toInt(), so
+// IDs above that range cannot reliably round-trip through v1's verification
+// and DB update paths.
 const (
-	blogIDBase  = int64(1) << 62
-	blogIDRange = int64(1) << 30
+	jetmonV1MaxSignedInt     = int64(1<<31 - 1)
+	blogIDBase               = int64(1_500_000_000)
+	blogIDRange              = int64(500_000_000)
+	blogIDGenerationAttempts = 32
 )
 
 func scanMonitorRow(row *sql.Row) (*monitor, error) {
@@ -140,6 +160,39 @@ func lookupAnyMonitor(ctx context.Context, q rowQueryer, url string) (*monitor, 
 		return nil, fmt.Errorf("query monitor: %w", err)
 	}
 	return m, nil
+}
+
+func generateSyntheticBlogID(ctx context.Context, q rowQueryer) (int64, error) {
+	for attempt := 0; attempt < blogIDGenerationAttempts; attempt++ {
+		blogID := blogIDBase + rand.Int63n(blogIDRange)
+		if !isJetmonV1SafeBlogID(blogID) {
+			return 0, fmt.Errorf("generated unsafe blog_id %d", blogID)
+		}
+		exists, err := blogIDExists(ctx, q, blogID)
+		if err != nil {
+			return 0, err
+		}
+		if !exists {
+			return blogID, nil
+		}
+	}
+	return 0, fmt.Errorf("generate synthetic blog_id: exhausted %d attempts", blogIDGenerationAttempts)
+}
+
+func blogIDExists(ctx context.Context, q rowQueryer, blogID int64) (bool, error) {
+	var exists int
+	err := q.QueryRowContext(ctx, sqlBlogIDExists, blogID).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("query blog_id collision: %w", err)
+	}
+	return true, nil
+}
+
+func isJetmonV1SafeBlogID(blogID int64) bool {
+	return blogID > 0 && blogID <= jetmonV1MaxSignedInt
 }
 
 // lookupEvents returns status_transition events for a monitor within the given window.
@@ -263,10 +316,22 @@ func createMonitor(ctx context.Context, db *sql.DB, monitorURL string, bucket in
 	}
 
 	if m != nil {
-		if _, err := tx.ExecContext(ctx, sqlReactivateMonitor, monitorURL); err != nil {
-			return nil, false, fmt.Errorf("reactivate monitor: %w", err)
-		}
 		createdOrReactivated := !m.MonitorActive
+		if !isJetmonV1SafeBlogID(m.BlogID) {
+			blogID, err := generateSyntheticBlogID(ctx, tx)
+			if err != nil {
+				return nil, false, err
+			}
+			if _, err := tx.ExecContext(ctx, sqlReactivateMonitorWithBlogID, blogID, monitorURL); err != nil {
+				return nil, false, fmt.Errorf("reactivate monitor with safe blog_id: %w", err)
+			}
+			m.BlogID = blogID
+			createdOrReactivated = true
+		} else {
+			if _, err := tx.ExecContext(ctx, sqlReactivateMonitor, monitorURL); err != nil {
+				return nil, false, fmt.Errorf("reactivate monitor: %w", err)
+			}
+		}
 		m.MonitorActive = true
 		m.SiteStatus = 1
 		if err := tx.Commit(); err != nil {
@@ -278,10 +343,12 @@ func createMonitor(ctx context.Context, db *sql.DB, monitorURL string, bucket in
 		return m, true, nil
 	}
 
-	// Assign a random synthetic blog_id. The range [2^62, 2^62+2^30) makes collision
-	// probability ~1/2^30 per insert; v1 has no UNIQUE on blog_id so a collision would
-	// silently insert a duplicate, but the probability is negligible in practice.
-	blogID := blogIDBase + rand.Int63n(blogIDRange)
+	// Assign a random synthetic blog_id. v1 has no UNIQUE on blog_id, so check
+	// for an existing row before inserting to avoid silent duplicate IDs.
+	blogID, err := generateSyntheticBlogID(ctx, tx)
+	if err != nil {
+		return nil, false, err
+	}
 	if _, err := tx.ExecContext(ctx, sqlInsertMonitor, blogID, bucket, monitorURL); err != nil {
 		return nil, false, fmt.Errorf("insert monitor: %w", err)
 	}
