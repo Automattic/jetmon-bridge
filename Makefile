@@ -1,4 +1,6 @@
-COMPOSE       = docker compose -f docker/docker-compose.yml --env-file docker/.env
+COMPOSE_PROJECT ?= jetmon-bridge
+
+COMPOSE       = docker compose -p $(COMPOSE_PROJECT) -f docker/docker-compose.yml --env-file docker/.env
 COMPOSE_LOCAL = $(COMPOSE) -f docker/docker-compose.local.yml
 
 .PHONY: up up-local down down-local down-clean build _require-dsn

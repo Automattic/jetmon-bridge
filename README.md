@@ -211,18 +211,20 @@ Stop: `make down-local` (or `make down-clean` to also wipe the data volume)
 
 In both Docker modes the bridge is reachable at `http://localhost:7400`.
 
+The Makefile uses the Docker Compose project name `jetmon-bridge` so these containers do not collide with other repositories that also have Docker Compose files under a `docker/` directory. Override it when needed with `COMPOSE_PROJECT=<name>`, for example `make up-local COMPOSE_PROJECT=jetmon-bridge-dev`.
+
 Local Docker mode enables persistent history by default at `/tmp/jetmon-history.db` with a 2-second poll interval so down/recovery transitions can be demonstrated quickly. Real database mode leaves history disabled unless `JETMON_HISTORY_PATH` is set.
 
 To smoke test persistent history locally after `make up-local`, update the seeded monitor through MySQL, waiting longer than the poll interval between changes:
 
 ```bash
-docker compose -f docker/docker-compose.yml --env-file docker/.env -f docker/docker-compose.local.yml exec mysql \
+docker compose -p jetmon-bridge -f docker/docker-compose.yml --env-file docker/.env -f docker/docker-compose.local.yml exec mysql \
   mysql -uroot -pjetmon_test jetmon_db \
   -e "UPDATE jetpack_monitor_sites SET site_status=2,last_status_change=UTC_TIMESTAMP() WHERE blog_id=1002"
 
 sleep 3
 
-docker compose -f docker/docker-compose.yml --env-file docker/.env -f docker/docker-compose.local.yml exec mysql \
+docker compose -p jetmon-bridge -f docker/docker-compose.yml --env-file docker/.env -f docker/docker-compose.local.yml exec mysql \
   mysql -uroot -pjetmon_test jetmon_db \
   -e "UPDATE jetpack_monitor_sites SET site_status=1,last_status_change=UTC_TIMESTAMP() WHERE blog_id=1002"
 
