@@ -199,6 +199,32 @@ make up
 
 Stop: `make down`
 
+### Docker (Jetmon v1.1 Compose)
+
+When Jetmon v1.1 is running from its Docker Compose stack, start it first from the Jetmon repo's `v1.1` branch:
+
+```bash
+cd ../jetmon/docker
+cp .env-sample .env
+docker network create jetmon-shared 2>/dev/null || true
+docker compose up --build
+```
+
+The v1.1 Compose file publishes MySQL on the shared network as `jetmon-v1-mysql`. Then start the bridge against that database:
+
+```bash
+cd ../../jetmon-bridge
+make up-jetmon-v1
+```
+
+`make up-jetmon-v1` uses `root:123456@tcp(jetmon-v1-mysql:3306)/jetmon_db` by default, forces bridge write mode off, and enables persistent history at `/tmp/jetmon-history.db`. Override the DSN when Jetmon's Docker `.env` uses different credentials:
+
+```bash
+make up-jetmon-v1 JETMON_V1_DSN='root:secret@tcp(jetmon-v1-mysql:3306)/jetmon_db'
+```
+
+If you intentionally want bridge write mode against the v1.1 Docker database, pass `JETMON_V1_WRITE=true`, `JETMON_V1_WRITE_DSN=...`, and `JETMON_V1_BUCKET=...` explicitly.
+
 ### Docker (local test data)
 
 Spins up a MySQL container seeded with two monitor sites. No external database required.
