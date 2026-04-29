@@ -22,6 +22,8 @@ services:
       - "-history-bootstrap=${JETMON_HISTORY_BOOTSTRAP:-true}"
     ports:
       - "${BRIDGE_LOCAL_PORT:-7400}:7400"
+    volumes:
+      - "${JETMON_HISTORY_DIR:-../data}:/var/lib/jetmon-bridge"
     networks:
       - default
       - jetmon-shared

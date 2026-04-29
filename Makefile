@@ -1,9 +1,9 @@
 COMPOSE_PROJECT ?= jetmon-bridge
 JETMON_V1_DSN ?= root:123456@tcp(jetmon-v1-mysql:3306)/jetmon_db
 JETMON_V1_WRITE ?= false
-JETMON_V1_WRITE_DSN ?=
+JETMON_V1_WRITE_DSN ?= $(JETMON_V1_DSN)
 JETMON_V1_BUCKET ?= 0
-JETMON_V1_HISTORY_PATH ?= /tmp/jetmon-history.db
+JETMON_V1_HISTORY_PATH ?= /var/lib/jetmon-bridge/history.db
 JETMON_V1_HISTORY_POLL_INTERVAL ?= 15s
 JETMON_V1_HISTORY_BOOTSTRAP ?= true
 

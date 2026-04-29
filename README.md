@@ -217,13 +217,13 @@ cd ../../jetmon-bridge
 make up-jetmon-v1
 ```
 
-`make up-jetmon-v1` uses `root:123456@tcp(jetmon-v1-mysql:3306)/jetmon_db` by default, forces bridge write mode off, and enables persistent history at `/tmp/jetmon-history.db`. Override the DSN when Jetmon's Docker `.env` uses different credentials:
+`make up-jetmon-v1` uses `root:123456@tcp(jetmon-v1-mysql:3306)/jetmon_db` by default, keeps bridge write mode off unless `JETMON_V1_WRITE=true` is passed, and enables persistent history at `/var/lib/jetmon-bridge/history.db`. The Docker Compose service bind-mounts `JETMON_HISTORY_DIR` (default `../data`, relative to the compose file) at `/var/lib/jetmon-bridge` so the SQLite history survives container recreation. Override the DSN when Jetmon's Docker `.env` uses different credentials:
 
 ```bash
 make up-jetmon-v1 JETMON_V1_DSN='root:secret@tcp(jetmon-v1-mysql:3306)/jetmon_db'
 ```
 
-If you intentionally want bridge write mode against the v1.1 Docker database, pass `JETMON_V1_WRITE=true`, `JETMON_V1_WRITE_DSN=...`, and `JETMON_V1_BUCKET=...` explicitly.
+If you intentionally want bridge write mode against the v1.1 Docker database, pass `JETMON_V1_WRITE=true` and `JETMON_V1_BUCKET=...` explicitly. `JETMON_V1_WRITE_DSN` defaults to `JETMON_V1_DSN`, but can be overridden when writes must go to a different primary.
 
 ### Docker (local test data)
 

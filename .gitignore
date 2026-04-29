@@ -2,6 +2,9 @@
 bin/
 jetmon-bridge
 
+# Runtime state
+data/
+
 # Go test and coverage artifacts
 *.test
 *.out
