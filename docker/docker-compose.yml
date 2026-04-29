@@ -15,6 +15,11 @@ services:
       - -token
       - "${JETMON_TOKEN:-}"
       - "-bucket=${JETMON_BUCKET:-0}"
+      - -history-path
+      - "${JETMON_HISTORY_PATH:-}"
+      - -history-poll-interval
+      - "${JETMON_HISTORY_POLL_INTERVAL:-15s}"
+      - "-history-bootstrap=${JETMON_HISTORY_BOOTSTRAP:-true}"
     ports:
       - "${BRIDGE_LOCAL_PORT:-7400}:7400"
     networks:

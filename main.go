@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 )
@@ -20,14 +21,17 @@ func init() {
 }
 
 func main() {
-	showVersion := flag.Bool("version",        false,            "Print version and exit")
-	dsn         := flag.String("dsn",          "",               "MySQL DSN for the Jetmon read replica (required)")
-	writeDSN    := flag.String("write-dsn",    "",               "MySQL DSN for write operations (primary); required when -write is set")
-	addr        := flag.String("addr",         "127.0.0.1:7400", "Listen address (host:port)")
-	readTimeout := flag.Duration("read-timeout", 5*time.Second,  "Per-request DB query timeout")
-	write       := flag.Bool("write",          false,            "Enable write endpoints: POST /monitors, DELETE /monitors")
-	token       := flag.String("token",        "",               "Bearer token for auth on all requests; empty disables auth")
-	bucket      := flag.Int("bucket",          0,                "Jetmon bucket number assigned to new monitors (must match an active worker bucket)")
+	showVersion := flag.Bool("version", false, "Print version and exit")
+	dsn := flag.String("dsn", "", "MySQL DSN for the Jetmon read replica (required)")
+	writeDSN := flag.String("write-dsn", "", "MySQL DSN for write operations (primary); required when -write is set")
+	addr := flag.String("addr", "127.0.0.1:7400", "Listen address (host:port)")
+	readTimeout := flag.Duration("read-timeout", 5*time.Second, "Per-request DB query timeout")
+	write := flag.Bool("write", false, "Enable write endpoints: POST /monitors, DELETE /monitors")
+	token := flag.String("token", "", "Bearer token for auth on all requests; empty disables auth")
+	bucket := flag.Int("bucket", 0, "Jetmon bucket number assigned to new monitors (must match an active worker bucket)")
+	historyPath := flag.String("history-path", envString("JETMON_HISTORY_PATH", ""), "SQLite file path for persistent event history; empty disables history")
+	historyPoll := flag.Duration("history-poll-interval", envDuration("JETMON_HISTORY_POLL_INTERVAL", defaultHistoryPollInterval), "Polling interval for persistent history")
+	historyBootstrap := flag.Bool("history-bootstrap", envBool("JETMON_HISTORY_BOOTSTRAP", true), "Poll once at startup to seed persistent history state")
 	flag.Parse()
 
 	if *showVersion {
@@ -40,7 +44,6 @@ func main() {
 		flag.Usage()
 		os.Exit(1)
 	}
-
 	db, err := openDB(*dsn)
 	if err != nil {
 		log.Fatalf("db: %v", err)
@@ -63,11 +66,45 @@ func main() {
 		}
 	}
 
+	var history *historyStore
+	var historyCancel context.CancelFunc
+	if *historyPath != "" {
+		if *historyPoll <= 0 {
+			fmt.Fprintln(os.Stderr, "jetmon-bridge: -history-poll-interval must be greater than 0")
+			os.Exit(1)
+		}
+
+		h, err := openHistoryStore(*historyPath)
+		if err != nil {
+			log.Fatalf("history-db: %v", err)
+		}
+		defer h.Close()
+		history = h
+
+		if *historyBootstrap {
+			ctx, cancel := context.WithTimeout(context.Background(), *readTimeout)
+			if err := history.poll(ctx, db, time.Now().UTC()); err != nil {
+				log.Printf("history bootstrap: %v", err)
+			}
+			cancel()
+		}
+
+		var historyCtx context.Context
+		historyCtx, historyCancel = context.WithCancel(context.Background())
+		go runHistoryPoller(historyCtx, db, history, *historyPoll, *readTimeout)
+		log.Printf("jetmon-bridge: persistent history enabled path=%q poll_interval=%s bootstrap=%t", *historyPath, historyPoll.String(), *historyBootstrap)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /time", handleTime)
 	mux.HandleFunc("GET /monitors", handleMonitors(db, *readTimeout))
-	mux.HandleFunc("GET /events", handleEvents(db, *readTimeout))
-	mux.HandleFunc("GET /healthz", handleHealthz(db, *readTimeout))
+	if history != nil {
+		mux.HandleFunc("GET /events", handleHistoryEvents(history, *readTimeout))
+		mux.HandleFunc("GET /healthz", handleHealthzWithHistory(db, history, *readTimeout))
+	} else {
+		mux.HandleFunc("GET /events", handleEvents(db, *readTimeout))
+		mux.HandleFunc("GET /healthz", handleHealthz(db, *readTimeout))
+	}
 
 	if *write {
 		mux.HandleFunc("POST /monitors", handleMonitorsPost(writeDB, *bucket, *readTimeout))
@@ -101,10 +138,46 @@ func main() {
 	<-quit
 
 	log.Println("shutting down...")
+	if historyCancel != nil {
+		historyCancel()
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(ctx); err != nil {
 		log.Fatalf("server shutdown: %v", err)
 	}
 	log.Println("stopped")
+}
+
+func envString(name, fallback string) string {
+	if value := os.Getenv(name); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func envDuration(name string, fallback time.Duration) time.Duration {
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "jetmon-bridge: invalid %s=%q, using %s\n", name, value, fallback)
+		return fallback
+	}
+	return parsed
+}
+
+func envBool(name string, fallback bool) bool {
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "jetmon-bridge: invalid %s=%q, using %t\n", name, value, fallback)
+		return fallback
+	}
+	return parsed
 }

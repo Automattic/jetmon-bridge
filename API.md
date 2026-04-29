@@ -44,6 +44,12 @@ Enables `POST /monitors` and `DELETE /monitors`. The bridge creates new Jetmon m
 SELECT DISTINCT bucket_no FROM jetpack_monitor_sites WHERE monitor_active = 1;
 ```
 
+### Persistent history (`-history-path=<sqlite-file>`)
+
+When enabled, the bridge starts a background observer that polls active rows in Jetmon's `jetpack_monitor_sites` table and writes observed status transitions to a bridge-owned SQLite database. This does not write to Jetmon's database and does not change Jetmon's checks.
+
+Use `-history-poll-interval` to keep the observer interval shorter than Jetmon's check interval. The default is `15s`. `-history-bootstrap=true` performs one startup poll to seed current monitor state before normal polling.
+
 ---
 
 ## Error format
@@ -164,9 +170,11 @@ Soft-deletes a monitor by setting `monitor_active = 0`, and also resets `site_st
 
 Returns `status_transition` events for a monitor within a time window. Returns an empty array `[]` (not `null`) when no events match.
 
-**Jetmon v1 limitation:** Jetmon v1 has no audit log table. Events are synthesized from `jetpack_monitor_sites.last_status_change` and `site_status`. **At most one event is returned per call** — the most recent transition recorded for the monitor. If that transition's timestamp falls outside `[since, until)`, the response is `[]`. The `old_status` and `new_status` fields are inferred from the current `site_status` value (best-effort).
+When persistent history is enabled with `-history-path`, events are returned from the bridge-owned SQLite history database. The response includes every persisted transition for the monitor in `[since, until)`, ordered by `created_at`.
 
-**Poll frequency requirement:** Because `last_status_change` is overwritten on every transition, intermediate state changes are invisible once the next transition occurs. To observe every transition, the adapter must poll `/events` more frequently than Jetmon's check interval (default 5 minutes). A poll window shorter than one check interval guarantees each transition appears in exactly one call's result set; longer windows may silently miss transitions where a site went down and recovered between polls.
+When persistent history is disabled, Jetmon v1's audit-log limitation applies: events are synthesized from `jetpack_monitor_sites.last_status_change` and `site_status`. **At most one event is returned per call** — the most recent transition recorded for the monitor. If that transition's timestamp falls outside `[since, until)`, the response is `[]`. The `old_status` and `new_status` fields are inferred from the current `site_status` value (best-effort).
+
+**History poll frequency requirement:** Because `last_status_change` is overwritten on every transition, the bridge history observer must poll Jetmon more frequently than Jetmon's check interval (default 5 minutes). A poll interval shorter than one check interval allows the bridge to persist down/recovery transitions that would otherwise be overwritten before uptime-bench retrieves events.
 
 **Parameters:**
 
@@ -184,7 +192,7 @@ Returns `status_transition` events for a monitor within a time window. Returns a
     "id":         0,
     "blog_id":    1001,
     "event_type": "status_transition",
-    "source":     "jetmon",
+    "source":     "veriflier",
     "http_code":  null,
     "old_status": 1,
     "new_status": 2,
@@ -196,10 +204,10 @@ Returns `status_transition` events for a monitor within a time window. Returns a
 
 | Field        | Type            | Description                                                |
 |--------------|-----------------|------------------------------------------------------------|
-| `id`         | integer         | Always `0` in v1 (no audit log row)                        |
+| `id`         | integer         | SQLite history event id when history is enabled; otherwise `0` |
 | `blog_id`    | integer         | Monitor blog_id                                            |
 | `event_type` | string          | Always `"status_transition"`                               |
-| `source`     | string          | Always `"jetmon"` in v1                                    |
+| `source`     | string          | `"worker"` for `site_status=0`, `"veriflier"` for `2`, `"jetmon"` for recovery to `1` |
 | `http_code`  | integer or null | Always `null` in v1 (not persisted to DB)                  |
 | `old_status` | integer or null | Status before transition (inferred): `1` = running, `2` = confirmed_down |
 | `new_status` | integer or null | Status after transition (inferred): same codes as above    |
@@ -214,12 +222,18 @@ Returns `status_transition` events for a monitor within a time window. Returns a
 
 ### `GET /healthz`
 
-Checks that the bridge can reach the database.
+Checks that the bridge can reach the Jetmon database and, when enabled, the SQLite history database.
 
 **Response 200:**
 
 ```json
 {"status": "ok"}
+```
+
+With history enabled:
+
+```json
+{"status": "ok", "history": "ok"}
 ```
 
 **Response 503:**

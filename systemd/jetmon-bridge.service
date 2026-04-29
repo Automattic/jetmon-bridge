@@ -3,6 +3,8 @@ Description=jetmon-bridge — read-only HTTP API bridge for Jetmon 1
 After=network-online.target
 Wants=network-online.target
 Documentation=https://github.com/Automattic/jetmon-bridge
+StartLimitIntervalSec=60s
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -20,12 +22,13 @@ ExecStart=/opt/jetmon-bridge/jetmon-bridge \
     -read-timeout $JETMON_READ_TIMEOUT \
     -write=$JETMON_WRITE \
     -token=$JETMON_TOKEN \
-    -bucket=$JETMON_BUCKET
+    -bucket=$JETMON_BUCKET \
+    -history-path=$JETMON_HISTORY_PATH \
+    -history-poll-interval $JETMON_HISTORY_POLL_INTERVAL \
+    -history-bootstrap=$JETMON_HISTORY_BOOTSTRAP
 
 Restart=on-failure
 RestartSec=5s
-StartLimitIntervalSec=60s
-StartLimitBurst=5
 
 # Allow in-flight requests up to 30 s to drain before SIGKILL.
 TimeoutStopSec=35s

@@ -27,6 +27,11 @@ services:
       - -token
       - "${JETMON_TOKEN:-}"
       - "-bucket=${JETMON_BUCKET:-0}"
+      - -history-path
+      - "${JETMON_HISTORY_PATH:-/tmp/jetmon-history.db}"
+      - -history-poll-interval
+      - "${JETMON_HISTORY_POLL_INTERVAL:-2s}"
+      - "-history-bootstrap=${JETMON_HISTORY_BOOTSTRAP:-true}"
     depends_on:
       mysql:
         condition: service_healthy

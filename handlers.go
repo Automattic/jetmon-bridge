@@ -99,7 +99,19 @@ func handleMonitorsDelete(db *sql.DB, timeout time.Duration) http.HandlerFunc {
 	}
 }
 
+type eventLookupFunc func(ctx context.Context, blogID int64, since, until time.Time) ([]event, error)
+
 func handleEvents(db *sql.DB, timeout time.Duration) http.HandlerFunc {
+	return handleEventsLookup(timeout, func(ctx context.Context, blogID int64, since, until time.Time) ([]event, error) {
+		return lookupEvents(ctx, db, blogID, since, until)
+	})
+}
+
+func handleHistoryEvents(history *historyStore, timeout time.Duration) http.HandlerFunc {
+	return handleEventsLookup(timeout, history.lookupEvents)
+}
+
+func handleEventsLookup(timeout time.Duration, lookup eventLookupFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 
@@ -133,7 +145,7 @@ func handleEvents(db *sql.DB, timeout time.Duration) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), timeout)
 		defer cancel()
 
-		events, err := lookupEvents(ctx, db, blogID, since, until)
+		events, err := lookup(ctx, blogID, since, until)
 		if err != nil {
 			log.Printf("GET /events blog_id=%d: %v", blogID, err)
 			writeJSON(w, http.StatusInternalServerError, errBody("internal server error"))
@@ -145,6 +157,10 @@ func handleEvents(db *sql.DB, timeout time.Duration) http.HandlerFunc {
 }
 
 func handleHealthz(db *sql.DB, timeout time.Duration) http.HandlerFunc {
+	return handleHealthzWithHistory(db, nil, timeout)
+}
+
+func handleHealthzWithHistory(db *sql.DB, history *historyStore, timeout time.Duration) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), timeout)
 		defer cancel()
@@ -152,7 +168,19 @@ func handleHealthz(db *sql.DB, timeout time.Duration) http.HandlerFunc {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "error", "error": err.Error()})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		body := map[string]string{"status": "ok"}
+		if history != nil {
+			if err := history.PingContext(ctx); err != nil {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+					"status":  "error",
+					"error":   err.Error(),
+					"history": "error",
+				})
+				return
+			}
+			body["history"] = "ok"
+		}
+		writeJSON(w, http.StatusOK, body)
 	}
 }
 

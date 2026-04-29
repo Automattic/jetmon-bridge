@@ -23,6 +23,9 @@ jetmon-bridge solves this by sitting alongside Jetmon's database as an observer.
 | `-write-dsn` | `""` | MySQL DSN for write operations (must be the primary, not the replica); required when `-write` is set |
 | `-token` | `""` | Bearer token required on all requests; empty disables auth |
 | `-bucket` | `0` | Jetmon worker bucket number assigned to new monitors (write mode only) |
+| `-history-path` | `JETMON_HISTORY_PATH` or `""` | SQLite path for bridge-owned persistent event history; empty disables history |
+| `-history-poll-interval` | `JETMON_HISTORY_POLL_INTERVAL` or `15s` | Poll interval for persistent history; keep shorter than Jetmon's check interval |
+| `-history-bootstrap` | `JETMON_HISTORY_BOOTSTRAP` or `true` | Poll once at startup to seed observed monitor state |
 | `-version` | | Print version and exit |
 
 ---
@@ -88,7 +91,9 @@ Returns status-transition events for the given `blog_id` within the time window.
 
 Returns an empty array `[]` when no events match the window.
 
-**v1 limitation:** Jetmon 1 has no audit log. This endpoint synthesizes a single event from `last_status_change` (timestamp of the most recent transition) and `site_status` (current state). At most one event is returned per call. To observe all transitions, poll at an interval shorter than Jetmon's check interval (5 minutes by default).
+When persistent history is disabled, Jetmon 1's audit-log limitation still applies: this endpoint synthesizes a single event from `last_status_change` and `site_status`, so at most one event is returned per call.
+
+When persistent history is enabled with `-history-path`, the bridge polls active rows in `jetpack_monitor_sites`, records observed transitions in its own SQLite database, and returns every persisted event in the requested `[since, until)` window.
 
 **`source` values:**
 
@@ -107,6 +112,8 @@ Returns `200 OK` when the bridge can reach the database, `503 Service Unavailabl
 ```json
 {"status": "ok"}
 ```
+
+When persistent history is enabled, the response includes `"history":"ok"` and returns `503` if the SQLite history database is unavailable.
 
 ---
 
@@ -194,7 +201,7 @@ Stop: `make down`
 
 ### Docker (local test data)
 
-Spins up a MySQL container seeded with two monitor sites and a recorded down/recovery sequence. No external database required.
+Spins up a MySQL container seeded with two monitor sites. No external database required.
 
 ```bash
 make up-local
@@ -203,6 +210,25 @@ make up-local
 Stop: `make down-local` (or `make down-clean` to also wipe the data volume)
 
 In both Docker modes the bridge is reachable at `http://localhost:7400`.
+
+Local Docker mode enables persistent history by default at `/tmp/jetmon-history.db` with a 2-second poll interval so down/recovery transitions can be demonstrated quickly. Real database mode leaves history disabled unless `JETMON_HISTORY_PATH` is set.
+
+To smoke test persistent history locally after `make up-local`, update the seeded monitor through MySQL, waiting longer than the poll interval between changes:
+
+```bash
+docker compose -f docker/docker-compose.yml --env-file docker/.env -f docker/docker-compose.local.yml exec mysql \
+  mysql -uroot -pjetmon_test jetmon_db \
+  -e "UPDATE jetpack_monitor_sites SET site_status=2,last_status_change=UTC_TIMESTAMP() WHERE blog_id=1002"
+
+sleep 3
+
+docker compose -f docker/docker-compose.yml --env-file docker/.env -f docker/docker-compose.local.yml exec mysql \
+  mysql -uroot -pjetmon_test jetmon_db \
+  -e "UPDATE jetpack_monitor_sites SET site_status=1,last_status_change=UTC_TIMESTAMP() WHERE blog_id=1002"
+
+sleep 3
+curl "http://localhost:7400/events?blog_id=1002&since=$(date -u -d '10 minutes ago' +%Y-%m-%dT%H:%M:%SZ)&until=$(date -u -d '10 minutes' +%Y-%m-%dT%H:%M:%SZ)"
+```
 
 ---
 

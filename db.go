@@ -155,13 +155,16 @@ WHERE  blog_id            = ?
 LIMIT  1`
 
 	var siteStatus int
-	var lastChange time.Time
+	var lastChange nullableTime
 	err := db.QueryRowContext(ctx, q, blogID, since, until).Scan(&siteStatus, &lastChange)
 	if errors.Is(err, sql.ErrNoRows) {
 		return []event{}, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("query events: %w", err)
+	}
+	if !lastChange.Valid {
+		return []event{}, nil
 	}
 
 	oldStatus, newStatus, err := inferStatusTransition(siteStatus)
@@ -171,14 +174,10 @@ LIMIT  1`
 		return []event{}, nil
 	}
 
-	// Source reflects how the transition was detected:
-	// worker = initial down detection (unconfirmed), veriflier = confirmed down, jetmon = recovery.
-	source := "jetmon"
-	switch siteStatus {
-	case 0:
-		source = "worker"
-	case 2:
-		source = "veriflier"
+	source, err := sourceForStatus(siteStatus)
+	if err != nil {
+		log.Printf("lookupEvents blog_id=%d: %v, skipping synthetic event", blogID, err)
+		return []event{}, nil
 	}
 
 	e := event{
@@ -188,7 +187,7 @@ LIMIT  1`
 		Source:    source,
 		OldStatus: &oldStatus,
 		NewStatus: &newStatus,
-		CreatedAt: lastChange.UTC().Format(time.RFC3339),
+		CreatedAt: formatAPITime(lastChange.Time),
 	}
 	return []event{e}, nil
 }
@@ -205,6 +204,21 @@ func inferStatusTransition(siteStatus int) (oldStatus, newStatus int, err error)
 		return 1, 0, nil
 	default:
 		return 0, 0, fmt.Errorf("unexpected site_status %d", siteStatus)
+	}
+}
+
+// sourceForStatus reflects how the transition was detected:
+// worker = initial down detection (unconfirmed), veriflier = confirmed down, jetmon = recovery.
+func sourceForStatus(siteStatus int) (string, error) {
+	switch siteStatus {
+	case 0:
+		return "worker", nil
+	case 1:
+		return "jetmon", nil
+	case 2:
+		return "veriflier", nil
+	default:
+		return "", fmt.Errorf("unexpected site_status %d", siteStatus)
 	}
 }
 
