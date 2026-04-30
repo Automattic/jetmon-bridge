@@ -2,14 +2,20 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 )
+
+const maxMonitorRequestBodyBytes = 4096
 
 func handleTime(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]time.Time{
@@ -44,24 +50,33 @@ func handleMonitors(db *sql.DB, timeout time.Duration) http.HandlerFunc {
 
 func handleMonitorsPost(db *sql.DB, bucket int, timeout time.Duration) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, maxMonitorRequestBodyBytes)
+
 		var body struct {
 			URL string `json:"url"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, errBody("invalid request body"))
 			return
 		}
-		if body.URL == "" {
-			writeJSON(w, http.StatusBadRequest, errBody("url is required"))
+		if err := dec.Decode(&struct{}{}); err != io.EOF {
+			writeJSON(w, http.StatusBadRequest, errBody("invalid request body"))
+			return
+		}
+		monitorURL, err := validateMonitorURL(body.URL)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, errBody(err.Error()))
 			return
 		}
 
 		ctx, cancel := context.WithTimeout(r.Context(), timeout)
 		defer cancel()
 
-		m, created, err := createMonitor(ctx, db, body.URL, bucket)
+		m, created, err := createMonitor(ctx, db, monitorURL, bucket)
 		if err != nil {
-			log.Printf("POST /monitors url=%q: %v", body.URL, err)
+			log.Printf("POST /monitors url=%q: %v", monitorURL, err)
 			writeJSON(w, http.StatusInternalServerError, errBody("internal server error"))
 			return
 		}
@@ -125,7 +140,7 @@ func handleEventsLookup(timeout time.Duration, lookup eventLookupFunc) http.Hand
 		}
 
 		blogID, err := strconv.ParseInt(blogIDStr, 10, 64)
-		if err != nil {
+		if err != nil || blogID <= 0 {
 			writeJSON(w, http.StatusBadRequest, errBody("invalid blog_id"))
 			return
 		}
@@ -139,6 +154,10 @@ func handleEventsLookup(timeout time.Duration, lookup eventLookupFunc) http.Hand
 		until, err := time.Parse(time.RFC3339, untilStr)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, errBody("invalid until: must be RFC3339"))
+			return
+		}
+		if !since.Before(until) {
+			writeJSON(w, http.StatusBadRequest, errBody("since must be before until"))
 			return
 		}
 
@@ -188,12 +207,35 @@ func handleHealthzWithHistory(db *sql.DB, history *historyStore, timeout time.Du
 func authMiddleware(token string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if !ok || got != token {
+		if !ok || subtle.ConstantTimeCompare([]byte(got), []byte(token)) != 1 {
 			writeJSON(w, http.StatusUnauthorized, errBody("unauthorized"))
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func validateMonitorURL(raw string) (string, error) {
+	monitorURL := strings.TrimSpace(raw)
+	if monitorURL == "" {
+		return "", fmt.Errorf("url is required")
+	}
+	u, err := url.Parse(monitorURL)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "", fmt.Errorf("url must be an absolute http or https URL")
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https":
+	default:
+		return "", fmt.Errorf("url must use http or https")
+	}
+	if u.User != nil {
+		return "", fmt.Errorf("url must not include credentials")
+	}
+	if u.Fragment != "" {
+		return "", fmt.Errorf("url must not include a fragment")
+	}
+	return monitorURL, nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

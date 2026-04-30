@@ -1,6 +1,6 @@
 # Build artifacts
 bin/
-jetmon-bridge
+/jetmon-bridge
 
 # Runtime state
 data/

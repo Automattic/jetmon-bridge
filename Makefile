@@ -10,7 +10,7 @@ JETMON_V1_HISTORY_BOOTSTRAP ?= true
 COMPOSE       = docker compose -p $(COMPOSE_PROJECT) -f docker/docker-compose.yml --env-file docker/.env
 COMPOSE_LOCAL = $(COMPOSE) -f docker/docker-compose.local.yml
 
-.PHONY: up up-local up-jetmon-v1 down down-local down-clean build _ensure-env _ensure-shared-network _require-dsn
+.PHONY: up up-local up-jetmon-v1 down down-local down-clean build test vet check _ensure-env _ensure-shared-network _require-dsn
 
 ## up: start the bridge against Jetmon 1's read replica (requires JETMON_DSN in docker/.env)
 up: _require-dsn _ensure-shared-network
@@ -61,4 +61,15 @@ down-clean:
 
 ## build: compile the binary for the current platform
 build:
-	go build -o bin/jetmon-bridge .
+	go build -o bin/jetmon-bridge ./cmd/jetmon-bridge
+
+## test: run unit tests
+test:
+	go test ./...
+
+## vet: run Go static checks
+vet:
+	go vet ./...
+
+## check: run unit tests and static checks
+check: test vet

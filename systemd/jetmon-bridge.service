@@ -1,5 +1,5 @@
 [Unit]
-Description=jetmon-bridge — read-only HTTP API bridge for Jetmon 1
+Description=jetmon-bridge - HTTP API bridge for Jetmon 1
 After=network-online.target
 Wants=network-online.target
 Documentation=https://github.com/Automattic/jetmon-bridge

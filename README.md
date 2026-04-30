@@ -1,276 +1,77 @@
 # jetmon-bridge
 
-HTTP API bridge for Jetmon 1. Queries the Jetmon database to expose monitor status and incident events in a format compatible with the [uptime-bench](https://github.com/Automattic/uptime-bench) adapter interface. Enables benchmarking of Jetmon 1 without modifying its code or affecting its operation.
+**A small bridge that lets uptime-bench measure Jetmon 1 without changing Jetmon.**
 
----
+Jetmon 1 is production uptime monitoring code with a simple database projection and no public API. That is a problem for benchmarking: [uptime-bench](https://github.com/Automattic/uptime-bench) needs to ask every monitored service the same questions after a controlled failure, but modifying Jetmon 1 to add benchmark endpoints would risk changing the behavior being measured.
 
-## What this is
+`jetmon-bridge` solves that by standing beside Jetmon 1 as an observer. It reads Jetmon's MySQL state, optionally keeps bridge-owned SQLite history for status transitions, and exposes a narrow HTTP API that uptime-bench can call through its Jetmon 1 adapter.
 
-[uptime-bench](https://github.com/Automattic/uptime-bench) benchmarks uptime monitoring services by injecting controlled failures against target endpoints and measuring how accurately each service detects them. To benchmark Jetmon 1, it needs to query Jetmon's incident data — but Jetmon 1 has no public API, and modifying Jetmon's code to add one would risk affecting the very behavior being measured.
-
-jetmon-bridge solves this by sitting alongside Jetmon's database as an observer. It exposes HTTP endpoints that the uptime-bench `jetmon-v1` adapter calls to look up monitors and retrieve incident data. Jetmon itself is unmodified.
-
----
-
-## Flags
-
-| Flag | Default | Purpose |
-|------|---------|---------|
-| `-dsn` | (required) | MySQL DSN for the Jetmon read replica |
-| `-addr` | `127.0.0.1:7400` | Listen address (`host:port`) |
-| `-read-timeout` | `5s` | Per-request DB query timeout |
-| `-write` | `false` | Enable write endpoints: `POST /monitors`, `DELETE /monitors` |
-| `-write-dsn` | `""` | MySQL DSN for write operations (must be the primary, not the replica); required when `-write` is set |
-| `-token` | `""` | Bearer token required on all requests; empty disables auth |
-| `-bucket` | `0` | Jetmon worker bucket number assigned to new monitors (write mode only) |
-| `-history-path` | `JETMON_HISTORY_PATH` or `""` | SQLite path for bridge-owned persistent event history; empty disables history |
-| `-history-poll-interval` | `JETMON_HISTORY_POLL_INTERVAL` or `15s` | Poll interval for persistent history; keep shorter than Jetmon's check interval |
-| `-history-bootstrap` | `JETMON_HISTORY_BOOTSTRAP` or `true` | Poll once at startup to seed observed monitor state |
-| `-version` | | Print version and exit |
-
----
-
-## API
-
-### `GET /time`
-
-Returns the bridge server's current UTC time. Used by the uptime-bench adapter to calibrate the clock offset between the benchmark harness and the Jetmon host before interpreting event timestamps.
-
-```json
-{"time": "2026-04-22T14:03:00.123456789Z"}
+```text
+controlled failure -> Jetmon 1 checks -> Jetmon MySQL
+                                      |
+                                      v
+                              jetmon-bridge -> uptime-bench reports
 ```
 
----
+## Why This Matters
 
-### `GET /monitors?url=<url>`
+Benchmarks are only useful when they do not perturb the system under test. Jetmon 1 was not designed as an API-first monitoring service, and its v1 schema stores only the current site status plus the most recent status-change time. This bridge gives uptime-bench the smallest stable boundary it needs while keeping Jetmon 1 itself untouched.
 
-Looks up the active Jetmon monitor for the given URL.
+| Audience | What Gets Better |
+|---|---|
+| Benchmark readers | Jetmon 1 results can sit beside Jetmon 2, Pingdom, UptimeRobot, Datadog, and other services in the same uptime-bench model. |
+| Jetmon operators | The production monitor does not need benchmark-specific code or schema changes. |
+| Adapter maintainers | The bridge presents a small API for monitor lookup, clock calibration, event retrieval, health, and optional write-mode provisioning. |
+| Systems reviewers | Read-only mode can run against a replica, while write mode is explicit, authenticated, and isolated behind a separate primary DSN. |
 
-```json
-{
-  "blog_id": 12345,
-  "monitor_url": "https://bench-target-01.example.com",
-  "site_status": 1,
-  "monitor_active": true,
-  "keyword": "",
-  "redirect_policy": "follow"
-}
-```
+## How It Works
 
-Returns `404` if no active monitor exists for the URL.
+The API has two operating styles:
 
-**`site_status` values:**
+- **Read-only mode** looks up existing Jetmon monitor rows and synthesizes the latest transition from `site_status` and `last_status_change`.
+- **Persistent-history mode** polls active monitor rows and stores observed transitions in a bridge-owned SQLite database so uptime-bench can retrieve multiple transitions from a run window.
+- **Write mode** is optional. It lets uptime-bench create and deactivate benchmark monitors through a separate primary DSN.
 
-| Value | Meaning |
-|-------|---------|
-| `0` | Down — initial detection, unconfirmed |
-| `1` | Running |
-| `2` | Confirmed down — verified by the veriflier |
+Jetmon remains the source of truth for checks. The bridge does not perform uptime probes, send notifications, or replace Jetmon's verification flow.
 
----
+## Try It Locally
 
-### `GET /events?blog_id=<id>&since=<rfc3339>&until=<rfc3339>`
-
-Returns status-transition events for the given `blog_id` within the time window. Used by the uptime-bench adapter during `Retrieve`.
-
-```json
-[
-  {
-    "id": 0,
-    "blog_id": 12345,
-    "event_type": "status_transition",
-    "source": "veriflier",
-    "http_code": null,
-    "old_status": 1,
-    "new_status": 2,
-    "detail": null,
-    "created_at": "2026-04-22T14:05:33Z"
-  }
-]
-```
-
-Returns an empty array `[]` when no events match the window.
-
-When persistent history is disabled, Jetmon 1's audit-log limitation still applies: this endpoint synthesizes a single event from `last_status_change` and `site_status`, so at most one event is returned per call.
-
-When persistent history is enabled with `-history-path`, the bridge polls active rows in `jetpack_monitor_sites`, records observed transitions in its own SQLite database, and returns every persisted event in the requested `[since, until)` window.
-
-**`source` values:**
-
-| Value | When |
-|-------|------|
-| `"worker"` | Initial unconfirmed down (`site_status = 0`) |
-| `"veriflier"` | Confirmed down (`site_status = 2`) |
-| `"jetmon"` | Recovery to running (`site_status = 1`) |
-
----
-
-### `GET /healthz`
-
-Returns `200 OK` when the bridge can reach the database, `503 Service Unavailable` otherwise.
-
-```json
-{"status": "ok"}
-```
-
-When persistent history is enabled, the response includes `"history":"ok"` and returns `503` if the SQLite history database is unavailable.
-
----
-
-### `POST /monitors` (write mode only)
-
-Creates a new monitor or reactivates an existing deactivated one. Requires `-write` to be enabled.
-
-Request body:
-```json
-{"url": "https://bench-target-01.example.com"}
-```
-
-Returns `201 Created` with the monitor object if a new monitor was created or a deactivated one was reactivated. Returns `200 OK` if the monitor already exists and is active. Existing rows are reset to `site_status = 1` with a fresh `last_status_change` before returning, so uptime-bench write-mode runs start from a clean running baseline.
-
----
-
-### `DELETE /monitors?url=<url>` (write mode only)
-
-Deactivates the monitor for the given URL (sets `monitor_active = 0`) and resets `site_status = 1` with a fresh `last_status_change`. Requires `-write` to be enabled.
-
-Returns `204 No Content` on success, `404` if no monitor exists for the URL.
-
----
-
-## Authentication
-
-All endpoints can be protected with a Bearer token by passing `-token <secret>`. When set, every request must include:
-
-```
-Authorization: Bearer <secret>
-```
-
-Requests without a valid token receive `401 Unauthorized`. Strongly recommended when write mode is enabled.
-
----
-
-## Deployment
-
-### Systemd (bare metal / VM)
-
-**First-time provisioning** — creates the system user, directory layout, and systemd unit on the target server:
-
-```bash
-./scripts/provision.sh deploy@your-server
-```
-
-The script installs everything but does not start the service. Before starting, set the DSN:
-
-```bash
-ssh deploy@your-server 'sudo nano /opt/jetmon-bridge/env'
-# Set JETMON_DSN=user:password@tcp(replica-host:3306)/jetmon_db
-```
-
-Then start:
-
-```bash
-ssh deploy@your-server 'sudo systemctl start jetmon-bridge && sudo systemctl status jetmon-bridge'
-```
-
-**Subsequent updates:**
-
-```bash
-./scripts/deploy-prod.sh deploy@your-server
-```
-
-**Viewing logs:**
-
-```bash
-ssh deploy@your-server 'journalctl -u jetmon-bridge -f'
-```
-
-See `systemd/env.sample` for all configurable environment variables.
-
-### Docker (real database)
-
-Connects the bridge container to an external Jetmon MySQL instance via the `jetmon-shared` Docker network.
-
-```bash
-cp docker/.env-sample docker/.env
-# Set JETMON_DSN in docker/.env
-make up
-```
-
-Stop: `make down`
-
-### Docker (Jetmon v1.1 Compose)
-
-When Jetmon v1.1 is running from its Docker Compose stack, start it first from the Jetmon repo's `v1.1` branch:
-
-```bash
-cd ../jetmon/docker
-cp .env-sample .env
-docker network create jetmon-shared 2>/dev/null || true
-docker compose up --build
-```
-
-The v1.1 Compose file publishes MySQL on the shared network as `jetmon-v1-mysql`. Then start the bridge against that database:
-
-```bash
-cd ../../jetmon-bridge
-make up-jetmon-v1
-```
-
-`make up-jetmon-v1` uses `root:123456@tcp(jetmon-v1-mysql:3306)/jetmon_db` by default, keeps bridge write mode off unless `JETMON_V1_WRITE=true` is passed, and enables persistent history at `/var/lib/jetmon-bridge/history.db`. The Docker Compose service bind-mounts `JETMON_HISTORY_DIR` (default `../data`, relative to the compose file) at `/var/lib/jetmon-bridge` so the SQLite history survives container recreation. Override the DSN when Jetmon's Docker `.env` uses different credentials:
-
-```bash
-make up-jetmon-v1 JETMON_V1_DSN='root:secret@tcp(jetmon-v1-mysql:3306)/jetmon_db'
-```
-
-If you intentionally want bridge write mode against the v1.1 Docker database, pass `JETMON_V1_WRITE=true` and `JETMON_V1_BUCKET=...` explicitly. `JETMON_V1_WRITE_DSN` defaults to `JETMON_V1_DSN`, but can be overridden when writes must go to a different primary.
-
-### Docker (local test data)
-
-Spins up a MySQL container seeded with two monitor sites. No external database required.
+The fastest local loop uses Docker Compose with seeded MySQL data:
 
 ```bash
 make up-local
+curl http://localhost:7400/healthz
+curl "http://localhost:7400/monitors?url=https://bench-target-01.example.com"
+make down-local
 ```
 
-Stop: `make down-local` (or `make down-clean` to also wipe the data volume)
-
-In both Docker modes the bridge is reachable at `http://localhost:7400`.
-
-The Makefile uses the Docker Compose project name `jetmon-bridge` so these containers do not collide with other repositories that also have Docker Compose files under a `docker/` directory. Override it when needed with `COMPOSE_PROJECT=<name>`, for example `make up-local COMPOSE_PROJECT=jetmon-bridge-dev`.
-
-Local Docker mode enables persistent history by default at `/tmp/jetmon-history.db` with a 2-second poll interval so down/recovery transitions can be demonstrated quickly. Real database mode leaves history disabled unless `JETMON_HISTORY_PATH` is set.
-
-To smoke test persistent history locally after `make up-local`, update the seeded monitor through MySQL, waiting longer than the poll interval between changes:
+Build and test from the repository root:
 
 ```bash
-docker compose -p jetmon-bridge -f docker/docker-compose.yml --env-file docker/.env -f docker/docker-compose.local.yml exec mysql \
-  mysql -uroot -pjetmon_test jetmon_db \
-  -e "UPDATE jetpack_monitor_sites SET site_status=2,last_status_change=UTC_TIMESTAMP() WHERE blog_id=1002"
-
-sleep 3
-
-docker compose -p jetmon-bridge -f docker/docker-compose.yml --env-file docker/.env -f docker/docker-compose.local.yml exec mysql \
-  mysql -uroot -pjetmon_test jetmon_db \
-  -e "UPDATE jetpack_monitor_sites SET site_status=1,last_status_change=UTC_TIMESTAMP() WHERE blog_id=1002"
-
-sleep 3
-curl "http://localhost:7400/events?blog_id=1002&since=$(date -u -d '10 minutes ago' +%Y-%m-%dT%H:%M:%SZ)&until=$(date -u -d '10 minutes' +%Y-%m-%dT%H:%M:%SZ)"
+make build
+go test ./...
 ```
 
----
+## Documentation
 
-## Pre-seeding
+| Document | Start Here For |
+|---|---|
+| [docs/README.md](docs/README.md) | Complete documentation map |
+| [docs/architecture.md](docs/architecture.md) | System shape, modes, and Jetmon v1 data limits |
+| [docs/api-reference.md](docs/api-reference.md) | HTTP API, request/response shapes, and adapter notes |
+| [docs/docker.md](docs/docker.md) | Docker Compose modes and local smoke commands |
+| [docs/development.md](docs/development.md) | Source layout, build, test, and smoke-test workflow |
+| [docs/deployment.md](docs/deployment.md) | Systemd deployment, flags, auth, write mode, and history |
 
-When running in read-only mode (default), Jetmon monitors must be created by an operator before running uptime-bench. The bridge does not create them automatically and `GET /monitors` returns `404` for any URL not already registered in `jetpack_monitor_sites`.
+## Relationship To Other Repos
 
-When running in write mode (`-write`), the bridge can create monitors on demand via `POST /monitors`. The `-bucket` flag must be set to an active Jetmon worker bucket so the created monitors are picked up for checking.
+- [Automattic/uptime-bench](https://github.com/Automattic/uptime-bench) is the benchmark harness that consumes this bridge.
+- [Automattic/jetmon v2](https://github.com/Automattic/jetmon/tree/v2) is the API-first Go rewrite of Jetmon. This bridge exists for Jetmon 1 compatibility during benchmark comparisons.
 
-Write-mode monitors use synthetic `blog_id` values in `[1,500,000,000, 2,000,000,000)`. Keep this range below Jetmon v1's signed 32-bit verifier limit; larger IDs do not reliably round-trip through v1's verifier and status update path.
+## Status
 
----
+The bridge supports monitor lookup, event retrieval, clock calibration, health checks, optional write-mode provisioning, and optional persistent event history. It is intended for private-network use by uptime-bench and trusted operators, not as a public Jetmon API.
 
-## Non-goals
+## License
 
-- **Not a general-purpose Jetmon API.** This bridge exposes only what uptime-bench needs.
-- **Not internet-facing.** Designed for private network deployment alongside the benchmark harness.
+GPL v2.0. See [LICENSE](LICENSE) for details.

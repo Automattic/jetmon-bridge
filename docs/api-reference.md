@@ -130,7 +130,7 @@ New monitors are assigned a synthetic `blog_id` in the range `[1,500,000,000, 2,
 
 | Field | Type   | Required | Description         |
 |-------|--------|----------|---------------------|
-| `url` | string | yes      | URL to monitor      |
+| `url` | string | yes      | Absolute `http` or `https` URL to monitor. Credentials and fragments are rejected. |
 
 **Response 201** — monitor was created or reactivated. Body is the same shape as `GET /monitors`.
 

@@ -145,6 +145,60 @@ func TestHandleMonitorsPost_EmptyURL(t *testing.T) {
 	assertJSONError(t, rec.Body, "url is required")
 }
 
+func TestHandleMonitorsPost_UnknownField(t *testing.T) {
+	h := handleMonitorsPost(nil, 0, time.Second)
+	req := httptest.NewRequest("POST", "/monitors", strings.NewReader(`{"url":"","extra":true}`))
+	rec := httptest.NewRecorder()
+	h(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("got %d, want 400", rec.Code)
+	}
+	assertJSONError(t, rec.Body, "invalid request body")
+}
+
+func TestHandleMonitorsPost_TrailingJSON(t *testing.T) {
+	h := handleMonitorsPost(nil, 0, time.Second)
+	req := httptest.NewRequest("POST", "/monitors", strings.NewReader(`{"url":"https://example.com"} {}`))
+	rec := httptest.NewRecorder()
+	h(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("got %d, want 400", rec.Code)
+	}
+	assertJSONError(t, rec.Body, "invalid request body")
+}
+
+func TestValidateMonitorURL(t *testing.T) {
+	valid, err := validateMonitorURL("  https://example.com/path?ok=1  ")
+	if err != nil {
+		t.Fatalf("valid URL rejected: %v", err)
+	}
+	if valid != "https://example.com/path?ok=1" {
+		t.Fatalf("trimmed URL = %q, want https://example.com/path?ok=1", valid)
+	}
+
+	cases := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"empty", "", "url is required"},
+		{"relative", "/status", "absolute"},
+		{"ftp", "ftp://example.com/status", "http or https"},
+		{"no host", "https:///status", "absolute"},
+		{"credentials", "https://user:pass@example.com/status", "credentials"},
+		{"fragment", "https://example.com/status#section", "fragment"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if _, err := validateMonitorURL(c.raw); err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("validateMonitorURL(%q) error = %v, want containing %q", c.raw, err, c.want)
+			}
+		})
+	}
+}
+
 // --- DELETE /monitors ---
 
 func TestHandleMonitorsDelete_MissingURL(t *testing.T) {
@@ -183,14 +237,18 @@ func TestHandleEvents_MissingParams(t *testing.T) {
 
 func TestHandleEvents_InvalidBlogID(t *testing.T) {
 	h := handleEvents(nil, time.Second)
-	req := httptest.NewRequest("GET", "/events?blog_id=notanumber&since=2024-01-01T00:00:00Z&until=2024-01-02T00:00:00Z", nil)
-	rec := httptest.NewRecorder()
-	h(rec, req)
+	for _, blogID := range []string{"notanumber", "0", "-1"} {
+		t.Run(blogID, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/events?blog_id="+blogID+"&since=2024-01-01T00:00:00Z&until=2024-01-02T00:00:00Z", nil)
+			rec := httptest.NewRecorder()
+			h(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("got %d, want 400", rec.Code)
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("got %d, want 400", rec.Code)
+			}
+			assertJSONError(t, rec.Body, "invalid blog_id")
+		})
 	}
-	assertJSONError(t, rec.Body, "invalid blog_id")
 }
 
 func TestHandleEvents_InvalidSince(t *testing.T) {
@@ -217,6 +275,24 @@ func TestHandleEvents_InvalidUntil(t *testing.T) {
 	assertJSONError(t, rec.Body, "invalid until")
 }
 
+func TestHandleEvents_InvalidWindow(t *testing.T) {
+	h := handleEvents(nil, time.Second)
+	for _, target := range []string{
+		"/events?blog_id=1&since=2024-01-02T00:00:00Z&until=2024-01-01T00:00:00Z",
+		"/events?blog_id=1&since=2024-01-01T00:00:00Z&until=2024-01-01T00:00:00Z",
+	} {
+		t.Run(target, func(t *testing.T) {
+			req := httptest.NewRequest("GET", target, nil)
+			rec := httptest.NewRecorder()
+			h(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("got %d, want 400", rec.Code)
+			}
+			assertJSONError(t, rec.Body, "since must be before until")
+		})
+	}
+}
+
 // --- write mode routing ---
 
 // TestWriteModeRouting_Returns405WhenDisabled verifies that Go 1.22's ServeMux
@@ -225,7 +301,7 @@ func TestHandleEvents_InvalidUntil(t *testing.T) {
 func TestWriteModeRouting_Returns405WhenDisabled(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /monitors", handleMonitors(nil, time.Second))
-	// POST and DELETE not registered — simulates -write=false
+	// POST and DELETE not registered - simulates -write=false
 
 	cases := []struct {
 		method string
@@ -252,12 +328,12 @@ func TestWriteModeRouting_RoutesRegisteredWhenEnabled(t *testing.T) {
 	mux.HandleFunc("POST /monitors", handleMonitorsPost(nil, 0, time.Second))
 	mux.HandleFunc("DELETE /monitors", handleMonitorsDelete(nil, time.Second))
 
-	// POST with empty url returns 400 (not 405) — confirms the route is registered.
+	// POST with empty url returns 400 (not 405) - confirms the route is registered.
 	req := httptest.NewRequest("POST", "/monitors", strings.NewReader(`{"url":""}`))
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	if rec.Code == http.StatusMethodNotAllowed {
-		t.Error("POST /monitors with write mode on returned 405 — route not registered")
+		t.Error("POST /monitors with write mode on returned 405 - route not registered")
 	}
 }
 

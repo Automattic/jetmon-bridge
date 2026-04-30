@@ -4,7 +4,7 @@
 # For subsequent updates, use deploy-prod.sh instead.
 #
 # What this script does:
-#   - Builds the binary locally (requires Go 1.22+)
+#   - Builds the binary locally (requires Go 1.26+)
 #   - Creates the jetmon-bridge system user on the server
 #   - Creates /opt/jetmon-bridge with correct ownership and permissions
 #   - Installs the binary, systemd service unit, and env file template
@@ -34,14 +34,14 @@ STAGING="/tmp/jetmon-bridge-provision"
 # ── 1. Build ─────────────────────────────────────────────────────────────────
 
 if ! command -v go &>/dev/null; then
-  echo "error: 'go' not found locally. Install Go 1.22+ to build the binary." >&2
+  echo "error: 'go' not found locally. Install Go 1.26+ to build the binary." >&2
   exit 1
 fi
 
 BUILD_VERSION="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
 echo "==> Building jetmon-bridge ${BUILD_VERSION} for linux/amd64..."
 mkdir -p bin
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w -X main.version=${BUILD_VERSION}" -o "${BINARY}" .
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w -X main.version=${BUILD_VERSION}" -o "${BINARY}" ./cmd/jetmon-bridge
 
 # ── 2. Upload files ───────────────────────────────────────────────────────────
 

@@ -1,9 +1,13 @@
 .git
 .gitignore
-.dockerignore
 .claude
+.codex
 bin
+data
+jetmon-bridge
 docker
 systemd
 scripts
+docs
 *.md
+**/*.md

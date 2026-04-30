@@ -44,6 +44,10 @@ func main() {
 		flag.Usage()
 		os.Exit(1)
 	}
+	if *readTimeout <= 0 {
+		fmt.Fprintln(os.Stderr, "jetmon-bridge: -read-timeout must be greater than 0")
+		os.Exit(1)
+	}
 	db, err := openDB(*dsn)
 	if err != nil {
 		log.Fatalf("db: %v", err)
@@ -55,15 +59,14 @@ func main() {
 	writeDB := db
 	if *write {
 		if *writeDSN == "" {
-			log.Println("WARNING: -write is set but -write-dsn is not — writes will use the read DSN; ensure it is the primary, not a read replica")
-		} else {
-			wdb, err := openDB(*writeDSN)
-			if err != nil {
-				log.Fatalf("write-db: %v", err)
-			}
-			defer wdb.Close()
-			writeDB = wdb
+			log.Fatal("write mode requires -write-dsn pointing at the Jetmon primary")
 		}
+		wdb, err := openDB(*writeDSN)
+		if err != nil {
+			log.Fatalf("write-db: %v", err)
+		}
+		defer wdb.Close()
+		writeDB = wdb
 	}
 
 	var history *historyStore
@@ -110,8 +113,11 @@ func main() {
 		mux.HandleFunc("POST /monitors", handleMonitorsPost(writeDB, *bucket, *readTimeout))
 		mux.HandleFunc("DELETE /monitors", handleMonitorsDelete(writeDB, *readTimeout))
 		log.Printf("jetmon-bridge: write mode enabled (bucket=%d)", *bucket)
+		if *token == "" {
+			log.Println("WARNING: write mode is enabled without bearer token auth")
+		}
 		if *bucket == 0 {
-			log.Println("WARNING: -bucket=0 is the default; verify this bucket is assigned to active Jetmon workers — monitors in an unowned bucket are never checked")
+			log.Println("WARNING: -bucket=0 is the default; verify this bucket is assigned to active Jetmon workers - monitors in an unowned bucket are never checked")
 		}
 	}
 
@@ -121,9 +127,18 @@ func main() {
 		log.Println("jetmon-bridge: bearer token auth enabled")
 	}
 
+	writeTimeout := *readTimeout + 5*time.Second
+	if writeTimeout < 10*time.Second {
+		writeTimeout = 10 * time.Second
+	}
+
 	srv := &http.Server{
-		Addr:    *addr,
-		Handler: handler,
+		Addr:              *addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	go func() {

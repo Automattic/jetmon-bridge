@@ -222,7 +222,7 @@ LIMIT  1`
 
 	oldStatus, newStatus, err := inferStatusTransition(siteStatus)
 	if err != nil {
-		// Unexpected site_status in the DB — log and treat as no event rather than 500.
+		// Unexpected site_status in the DB - log and treat as no event rather than 500.
 		log.Printf("lookupEvents blog_id=%d: %v, skipping synthetic event", blogID, err)
 		return []event{}, nil
 	}
@@ -245,15 +245,15 @@ LIMIT  1`
 	return []event{e}, nil
 }
 
-// inferStatusTransition derives old→new status from the current site_status recorded in v1.
+// inferStatusTransition derives old-to-new status from the current site_status recorded in v1.
 // Jetmon v1 only persists the most recent state; this is best-effort for the last transition.
 func inferStatusTransition(siteStatus int) (oldStatus, newStatus int, err error) {
 	switch siteStatus {
-	case 1: // SITE_RUNNING — most recent transition was a recovery from confirmed_down
+	case 1: // SITE_RUNNING - most recent transition was a recovery from confirmed_down
 		return 2, 1, nil
-	case 2: // SITE_CONFIRMED_DOWN — most recent transition was going down from running
+	case 2: // SITE_CONFIRMED_DOWN - most recent transition was going down from running
 		return 1, 2, nil
-	case 0: // SITE_DOWN — transient unconfirmed down, came from running
+	case 0: // SITE_DOWN - transient unconfirmed down, came from running
 		return 1, 0, nil
 	default:
 		return 0, 0, fmt.Errorf("unexpected site_status %d", siteStatus)
@@ -290,7 +290,7 @@ func createMonitor(ctx context.Context, db *sql.DB, monitorURL string, bucket in
 	// Per-URL advisory lock serializes concurrent POSTs for the same URL without
 	// locking unrelated rows. v1's composite index (blog_id, monitor_url) can't be
 	// used for a WHERE monitor_url=? lookup, so FOR UPDATE would scan the whole table;
-	// GET_LOCK avoids that. SHA2 of the prefixed URL keeps the lock name ≤ 64 chars.
+	// GET_LOCK avoids that. SHA2 of the prefixed URL keeps the lock name <= 64 chars.
 	var lockAcquired int
 	if err := conn.QueryRowContext(ctx,
 		"SELECT GET_LOCK(SHA2(CONCAT('jetmon-bridge:', ?), 256), 5)",
@@ -355,7 +355,7 @@ func createMonitor(ctx context.Context, db *sql.DB, monitorURL string, bucket in
 	if err := tx.Commit(); err != nil {
 		return nil, false, fmt.Errorf("commit: %w", err)
 	}
-	// All field values are known from the INSERT literals — no round-trip needed.
+	// All field values are known from the INSERT literals - no round-trip needed.
 	return &monitor{
 		BlogID:         blogID,
 		MonitorURL:     monitorURL,

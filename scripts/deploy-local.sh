@@ -18,7 +18,7 @@ ADDR="${JETMON_ADDR:-127.0.0.1:7400}"
 READ_TIMEOUT="${JETMON_READ_TIMEOUT:-5s}"
 
 echo "Building jetmon-bridge..."
-go build -o bin/jetmon-bridge .
+go build -o bin/jetmon-bridge ./cmd/jetmon-bridge
 
 echo "Starting jetmon-bridge on ${ADDR}..."
 exec bin/jetmon-bridge \
