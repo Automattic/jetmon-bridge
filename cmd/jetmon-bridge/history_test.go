@@ -169,6 +169,37 @@ func TestHistoryDuplicatePollsDoNotDuplicateEvents(t *testing.T) {
 	assertEvent(t, events[0], 1001, 1, 2, "veriflier", downAt)
 }
 
+func TestHistoryUnchangedPollDoesNotRewriteObservedMonitor(t *testing.T) {
+	ctx := context.Background()
+	sourceDB := newTestJetmonDB(t)
+	defer sourceDB.Close()
+	history := newTestHistoryStore(t, ":memory:")
+	defer history.Close()
+
+	baselineAt := time.Date(2026, 4, 22, 14, 0, 0, 0, time.UTC)
+	firstObservedAt := baselineAt.Add(time.Second)
+	secondObservedAt := baselineAt.Add(time.Minute)
+	setTestMonitor(t, sourceDB, 1001, "https://bench-target-01.example.com", 1, baselineAt)
+	if err := history.poll(ctx, sourceDB, firstObservedAt); err != nil {
+		t.Fatalf("poll baseline: %v", err)
+	}
+	if err := history.poll(ctx, sourceDB, secondObservedAt); err != nil {
+		t.Fatalf("poll unchanged: %v", err)
+	}
+
+	var lastPolled string
+	if err := history.db.QueryRowContext(ctx, `SELECT last_polled_at FROM observed_monitors WHERE blog_id = 1001`).Scan(&lastPolled); err != nil {
+		t.Fatalf("query observed monitor: %v", err)
+	}
+	parsed, err := parseDBTime(lastPolled)
+	if err != nil {
+		t.Fatalf("parse last_polled_at %q: %v", lastPolled, err)
+	}
+	if !parsed.Equal(firstObservedAt) {
+		t.Fatalf("last_polled_at = %s, want first poll %s", parsed, firstObservedAt)
+	}
+}
+
 func TestHistoryLastStatusChangeUpdateCreatesEvent(t *testing.T) {
 	ctx := context.Background()
 	sourceDB := newTestJetmonDB(t)

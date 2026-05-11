@@ -15,6 +15,7 @@ import (
 const (
 	defaultHistoryPollInterval = 15 * time.Second
 	historyTimeLayout          = "2006-01-02T15:04:05.000000000Z"
+	observedLookupBatchSize    = 500
 )
 
 const sqlHistoryActiveMonitors = `
@@ -147,12 +148,7 @@ func (h *historyStore) poll(ctx context.Context, jetmonDB *sql.DB, observedAt ti
 	}
 	defer rows.Close()
 
-	tx, err := h.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin history tx: %w", err)
-	}
-	defer tx.Rollback()
-
+	var snapshots []monitorSnapshot
 	for rows.Next() {
 		var snapshot monitorSnapshot
 		if err := rows.Scan(
@@ -169,12 +165,31 @@ func (h *historyStore) poll(ctx context.Context, jetmonDB *sql.DB, observedAt ti
 			continue
 		}
 
-		if err := recordMonitorSnapshot(ctx, tx, snapshot, observedAt.UTC()); err != nil {
-			return err
-		}
+		snapshots = append(snapshots, snapshot)
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate active monitors: %w", err)
+	}
+	if len(snapshots) == 0 {
+		return nil
+	}
+
+	observed, err := h.lookupObservedMonitors(ctx, snapshots)
+	if err != nil {
+		return err
+	}
+
+	tx, err := h.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin history tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	for _, snapshot := range snapshots {
+		prior, found := observed[snapshot.blogID]
+		if err := recordMonitorSnapshot(ctx, tx, snapshot, prior, found, observedAt.UTC()); err != nil {
+			return err
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -183,12 +198,7 @@ func (h *historyStore) poll(ctx context.Context, jetmonDB *sql.DB, observedAt ti
 	return nil
 }
 
-func recordMonitorSnapshot(ctx context.Context, tx *sql.Tx, snapshot monitorSnapshot, observedAt time.Time) error {
-	observed, found, err := lookupObservedMonitor(ctx, tx, snapshot.blogID)
-	if err != nil {
-		return err
-	}
-
+func recordMonitorSnapshot(ctx context.Context, tx *sql.Tx, snapshot monitorSnapshot, observed observedMonitor, found bool, observedAt time.Time) error {
 	if found && snapshotChanged(observed, snapshot) {
 		createdAt := observedAt
 		if snapshot.lastStatusChange.Valid {
@@ -203,27 +213,52 @@ func recordMonitorSnapshot(ctx context.Context, tx *sql.Tx, snapshot monitorSnap
 		}
 	}
 
-	if err := upsertObservedMonitor(ctx, tx, snapshot, observedAt); err != nil {
-		return err
+	if !found || snapshotChanged(observed, snapshot) {
+		if err := upsertObservedMonitor(ctx, tx, snapshot, observedAt); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-func lookupObservedMonitor(ctx context.Context, tx *sql.Tx, blogID int64) (observedMonitor, bool, error) {
-	const q = `
-SELECT last_site_status, last_status_change
+func (h *historyStore) lookupObservedMonitors(ctx context.Context, snapshots []monitorSnapshot) (map[int64]observedMonitor, error) {
+	observed := make(map[int64]observedMonitor, len(snapshots))
+	for start := 0; start < len(snapshots); start += observedLookupBatchSize {
+		end := start + observedLookupBatchSize
+		if end > len(snapshots) {
+			end = len(snapshots)
+		}
+		placeholders := make([]string, 0, end-start)
+		args := make([]any, 0, end-start)
+		for _, snapshot := range snapshots[start:end] {
+			placeholders = append(placeholders, "?")
+			args = append(args, snapshot.blogID)
+		}
+		q := `
+SELECT blog_id, last_site_status, last_status_change
 FROM   observed_monitors
-WHERE  blog_id = ?`
+WHERE  blog_id IN (` + strings.Join(placeholders, ",") + `)`
 
-	var observed observedMonitor
-	err := tx.QueryRowContext(ctx, q, blogID).Scan(&observed.lastSiteStatus, &observed.lastStatusChange)
-	if errors.Is(err, sql.ErrNoRows) {
-		return observedMonitor{}, false, nil
+		rows, err := h.db.QueryContext(ctx, q, args...)
+		if err != nil {
+			return nil, fmt.Errorf("lookup observed monitors: %w", err)
+		}
+		for rows.Next() {
+			var blogID int64
+			var prior observedMonitor
+			if err := rows.Scan(&blogID, &prior.lastSiteStatus, &prior.lastStatusChange); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("scan observed monitor: %w", err)
+			}
+			observed[blogID] = prior
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("iterate observed monitors: %w", err)
+		}
+		rows.Close()
 	}
-	if err != nil {
-		return observedMonitor{}, false, fmt.Errorf("lookup observed monitor: %w", err)
-	}
-	return observed, true, nil
+	return observed, nil
 }
 
 func snapshotChanged(observed observedMonitor, snapshot monitorSnapshot) bool {
